@@ -1,0 +1,5 @@
+services:
+  audiomuse-ai-flask:
+    image: audiomuse-ai:dev
+  audiomuse-ai-worker:
+    image: audiomuse-ai:dev

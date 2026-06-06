@@ -314,6 +314,40 @@
         </div>
     </section>
 
+    <!-- Audio Embedder info -->
+    <section>
+        <h2>Audio Embedder <span class="info-tooltip" tabindex="0">
+            <span class="info-icon" aria-hidden="true"></span>
+            <span class="tooltip-text">The model used to generate song embeddings and mood/genre predictions. Switch between MusiCNN (legacy, 200-dim, 50 moods) and MAEST (1280-dim, genre tags) in the Setup Wizard.</span>
+        </span></h2>
+        <div class="dash-grid">
+            <div class="dash-stat-card">
+                <h3>Model</h3>
+                <div class="dash-stat" id="embedder-model">{{ embedder_type|default('musicnn') }}</div>
+            </div>
+            <div class="dash-stat-card">
+                <h3>Dimension</h3>
+                <div class="dash-stat" id="embedder-dim">{{ embedding_dim|default(200) }}</div>
+                <div class="dash-substat">per song</div>
+            </div>
+            <div class="dash-stat-card">
+                <h3>Labels</h3>
+                <div class="dash-stat" id="embedder-labels">{{ mood_labels_count|default(50) }}</div>
+                <div class="dash-substat">mood/genre labels</div>
+            </div>
+            <div class="dash-stat-card">
+                <h3>200d Tracks</h3>
+                <div class="dash-stat" id="embedder-count-200">?</div>
+                <div class="dash-substat">MusiCNN analyzed</div>
+            </div>
+            <div class="dash-stat-card">
+                <h3>1280d Tracks</h3>
+                <div class="dash-stat" id="embedder-count-1280">?</div>
+                <div class="dash-substat">MAEST analyzed</div>
+            </div>
+        </div>
+    </section>
+
 </div>
 {% endblock %}
 
@@ -691,6 +725,16 @@
             setText('workers-updated', liveSuffix);
             setText('recent-updated', liveSuffix);
             setText('cron-updated', liveSuffix);
+
+            // Load embedder track counts
+            fetch('/api/embedder_status', { credentials: 'same-origin' })
+                .then(r => r.json())
+                .then(es => {
+                    const tc = es.track_counts || {};
+                    el('embedder-count-200').textContent = tc['200d'] ?? '?';
+                    el('embedder-count-1280').textContent = tc['1280d'] ?? '?';
+                })
+                .catch(() => {});
         } catch (e) {
             console.error('Dashboard load failed', e);
             ['keynumbers-updated', 'content-updated',

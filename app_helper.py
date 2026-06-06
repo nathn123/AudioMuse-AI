@@ -1669,6 +1669,44 @@ def cancel_job_and_children_recursive(job_id, task_type_from_db=None, reason="Ta
     return cancelled_count
 
 
+# --- app_config helpers ---
+
+def save_app_config_key(key, value):
+    """Persist a single key/value row in the app_config table.
+
+    Uses UPSERT so it works whether the row exists or not.
+    Returns True on success, False on failure.
+    """
+    try:
+        with get_db() as conn, conn.cursor() as cur:
+            cur.execute(
+                "INSERT INTO app_config (key, value) VALUES (%s, %s) "
+                "ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, "
+                "updated_at = CURRENT_TIMESTAMP",
+                (key, str(value)),
+            )
+            conn.commit()
+        return True
+    except Exception as e:
+        logger.warning(f"save_app_config_key('{key}') failed: {e}")
+        return False
+
+
+def read_app_config_key(key, default=None):
+    """Read a single key from the app_config table.
+
+    Returns the value string, or *default* if the key is missing.
+    """
+    try:
+        with get_db() as conn, conn.cursor() as cur:
+            cur.execute("SELECT value FROM app_config WHERE key = %s", (key,))
+            row = cur.fetchone()
+            return row[0] if row else default
+    except Exception as e:
+        logger.warning(f"read_app_config_key('{key}') failed: {e}")
+        return default
+
+
 # --- Auth / user-management helpers ---
 # All auth logic (setup/auth/admin barriers, user CRUD, password hashing,
 # JWT handling, the Flask routes) lives in ``app_auth``. The re-exports
