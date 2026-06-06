@@ -68,8 +68,8 @@ RUN set -eux; \
 RUN set -eux; \
     # --- MAEST Models (required for MAEST embedder) --- \
     maest_urls=( \
-        "https://essentia.upf.edu/models/feature-extractors/maest/discogs-maest-30s-pw-519l-2.onnx" \
-        "https://essentia.upf.edu/models/feature-extractors/maest/discogs-maest-30s-pw-519l-2.json" \
+        "https://github.com/nathn123/AudioMuse-AI/releases/download/v1.0.0/discogs-maest-30s-pw-519l-2.onnx" \
+        "https://github.com/nathn123/AudioMuse-AI/releases/download/v1.0.0/discogs-maest-30s-pw-519l-2.json" \
     ); \
     for u in "${maest_urls[@]}"; do \
         fname="/app/model/$(basename "$u")"; \
