@@ -306,6 +306,115 @@ def prepare_spectrogram_patches(audio, sr):
     return np.array(patches).transpose(0, 2, 1).astype(np.float32)
 
 
+# --- MAEST helpers -----------------------------------------------------------
+
+def prepare_maest_melspectrogram(audio, sr=16000):
+    """Build the (1, 1876, 96) float32 MAEST-style log-mel spectrogram.
+
+    MAEST expects a 30-second clip with n_mels=96, n_fft=1024, hop_length=256,
+    log10(1+10000*S) normalization, then z-scored per-frame.
+    The model input shape is (batch, time, mels) = (1, T, 96).
+
+    Returns a (1, T, 96) tensor ready for ONNX.
+    Returns None on failure.
+    """
+    duration = 30
+    target_samples = int(sr * duration)
+    y = audio[:target_samples] if len(audio) >= target_samples else np.pad(
+        audio, (0, target_samples - len(audio))
+    )
+    try:
+        S = librosa.feature.melspectrogram(y=y, sr=sr, n_fft=1024,
+                                            hop_length=256, n_mels=96)
+        S_log = np.log10(1 + 10000 * S)
+        mean, std = np.mean(S_log), np.std(S_log)
+        if std == 0:
+            std = 1e-8
+        S_norm = (S_log - mean) / std
+        # Shape is (mels, time) -> transpose to (time, mels) -> add batch dim
+        mel = S_norm.T.astype(np.float32)  # (T, 96)
+        mel = mel[np.newaxis, :, :]        # (1, T, 96)
+        return mel
+    except Exception as e:
+        logger.error(f"prepare_maest_melspectrogram failed: {e}")
+        return None
+
+
+def run_maest_inference(session, mel_tensor, input_name="melspectrogram"):
+    """Run MAEST ONNX model on a single (1, 1876, 96) mel tensor.
+
+    The model expects input shape (batch, time, mels) = (1, T, 96) where
+    T = 1876 for a 30-second clip at hop_length=256.
+    The input mel_tensor should already be shaped as (1, T, 96).
+
+    Returns (embedding_vector, logits_vector) as 1D numpy float32 arrays,
+    or (None, None) on failure.
+
+    Embedding is taken from layer_07_embeddings, mean-pooled over time
+    to produce a 768-dim vector. Logits are 519-dim genre predictions.
+    """
+    try:
+        output_names = [o.name for o in session.get_outputs()]
+        # Layer 7 is the best balance of semantic richness
+        emb_name = "layer_07_embeddings"
+
+        # Map the output name to actual ONNX output names
+        actual_emb_name = None
+        actual_logits_name = None
+        for o in output_names:
+            if "logits" in o.lower():
+                actual_logits_name = o
+            elif "layer_07" in o or "layer_7" in o:
+                actual_emb_name = o
+
+        if not actual_logits_name:
+            actual_logits_name = output_names[0]
+        if not actual_emb_name and len(output_names) >= 2:
+            # Fallback: use the second output
+            actual_emb_name = output_names[1]
+
+        targets = [actual_logits_name]
+        if actual_emb_name:
+            targets.append(actual_emb_name)
+
+        outputs = session.run(targets, {input_name: mel_tensor.astype(np.float32)})
+
+        logits = np.squeeze(outputs[0])  # (519,)
+
+        if len(outputs) >= 2:
+            embedding = outputs[1]  # (1, 1685, 768)
+            # Mean-pool over time dimension (axis=1)
+            if embedding.ndim == 3:
+                embedding = np.mean(embedding, axis=1)  # (1, 768)
+            embedding = np.squeeze(embedding)  # (768,)
+        else:
+            embedding = logits  # fallback
+
+        return embedding.astype(np.float32), logits.astype(np.float32)
+    except Exception as e:
+        logger.error(f"run_maest_inference failed: {e}", exc_info=True)
+        return None, None
+
+
+def load_maest_session(model_path, label="maest"):
+    """Create a single ONNX session for the MAEST model."""
+    opts = resolve_providers(allow_coreml=False)
+    return create_onnx_session(model_path, opts, label=label)
+
+
+def cleanup_maest_session(session, context=""):
+    """Close a MAEST ONNX session and run gc."""
+    if session is None:
+        return
+    suffix = f" ({context})" if context else ""
+    logger.info(f"Cleaning up MAEST session{suffix}")
+    try:
+        cleanup_onnx_session(session, "maest")
+    except Exception as e:
+        logger.warning(f"Error cleaning up MAEST session{suffix}: {e}")
+    gc.collect()
+
+
 # --- DB helpers -------------------------------------------------------------
 
 def _str_ids(ids):

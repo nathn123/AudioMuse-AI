@@ -202,7 +202,7 @@ def index():
             schema:
               type: string
     """
-    return render_template('index.html', title = 'AudioMuse-AI - Home Page', active='index')
+    return render_template('index.html', title='AudioMuse-AI - Home Page', active='index')
 
 
 @app.route('/api/status/<task_id>', methods=['GET'])
@@ -624,12 +624,59 @@ def get_config_endpoint():
         "score_weight_purity": config.SCORE_WEIGHT_PURITY,
         "score_weight_other_feature_diversity": config.SCORE_WEIGHT_OTHER_FEATURE_DIVERSITY,
         "score_weight_other_feature_purity": config.SCORE_WEIGHT_OTHER_FEATURE_PURITY,
-        "path_distance_metric": config.PATH_DISTANCE_METRIC
-      ,"alchemy_default_n_results": config.ALCHEMY_DEFAULT_N_RESULTS
-      ,"alchemy_max_n_results": config.ALCHEMY_MAX_N_RESULTS
-      ,"alchemy_temperature": config.ALCHEMY_TEMPERATURE
-      ,"alchemy_subtract_distance_angular": config.ALCHEMY_SUBTRACT_DISTANCE_ANGULAR
-      ,"alchemy_subtract_distance_euclid": config.ALCHEMY_SUBTRACT_DISTANCE_EUCLIDEAN
+        "path_distance_metric": config.PATH_DISTANCE_METRIC,
+        "alchemy_default_n_results": config.ALCHEMY_DEFAULT_N_RESULTS,
+        "alchemy_max_n_results": config.ALCHEMY_MAX_N_RESULTS,
+        "alchemy_temperature": config.ALCHEMY_TEMPERATURE,
+        "alchemy_subtract_distance_angular": config.ALCHEMY_SUBTRACT_DISTANCE_ANGULAR,
+        "alchemy_subtract_distance_euclid": config.ALCHEMY_SUBTRACT_DISTANCE_EUCLIDEAN,
+        "embedder_type": config.EMBEDDER_TYPE,
+        "embedding_dimension": config.EMBEDDING_DIMENSION,
+    })
+
+
+@app.route('/api/set_embedder', methods=['POST'])
+def set_embedder_endpoint():
+    data = request.get_json(force=True)
+    new_type = data.get('embedder_type', '').lower().strip()
+    if new_type not in ('musicnn', 'maest'):
+        return jsonify({'ok': False, 'error': f"Invalid embedder_type '{new_type}'. Must be 'musicnn' or 'maest'."}), 400
+
+    from app_helper import save_app_config_key
+    ok = save_app_config_key('EMBEDDER_TYPE', new_type)
+    if not ok:
+        return jsonify({'ok': False, 'error': 'Failed to persist embedder type to app_config.'}), 500
+
+    config.EMBEDDER_TYPE = new_type
+    config.EMBEDDING_DIMENSION = config._compute_embedding_dim() if hasattr(config, '_compute_embedding_dim') else int(os.environ.get('MAEST_EMBEDDING_DIMENSION', '1280') if new_type == 'maest' else '200')
+    config.MOOD_LABELS_RESOLVED = config.MAEST_MOOD_LABELS if new_type == 'maest' else config.MOOD_LABELS
+
+    logger.info(f"Embedder type switched to '{new_type}' (dim={config.EMBEDDING_DIMENSION})")
+    return jsonify({'ok': True, 'embedder_type': new_type})
+
+
+@app.route('/api/embedder_status', methods=['GET'])
+def embedder_status_endpoint():
+    from app_helper import get_db
+    counts = {'200d': 0, '1280d': 0, 'other': 0}
+    try:
+        conn = get_db()
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT octet_length(embedding) / 4 AS dim, COUNT(*) FROM embedding "
+                "WHERE embedding IS NOT NULL GROUP BY dim ORDER BY dim"
+            )
+            for dim, cnt in cur.fetchall():
+                key = f"{dim}d" if dim in (200, 1280) else "other"
+                counts[key] = cnt
+    except Exception as e:
+        logger.warning(f"embedder_status_endpoint: DB query failed: {e}")
+
+    return jsonify({
+        'embedder_type': config.EMBEDDER_TYPE,
+        'embedding_dimension': config.EMBEDDING_DIMENSION,
+        'mood_labels_count': len(config.MOOD_LABELS_RESOLVED),
+        'track_counts': counts,
     })
 
 @app.route('/api/playlists', methods=['GET'])

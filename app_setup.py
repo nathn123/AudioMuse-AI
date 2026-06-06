@@ -305,9 +305,9 @@ def setup_page():
       200:
         description: HTML page rendered.
     """
-    from config import LYRICS_ENABLED
+    from config import LYRICS_ENABLED, EMBEDDER_TYPE
     return render_template('setup.html', title='AudioMuse-AI - Setup Wizard', active='setup',
-                           lyrics_enabled=LYRICS_ENABLED)
+                           lyrics_enabled=LYRICS_ENABLED, embedder_type=EMBEDDER_TYPE)
 
 @app.route('/api/setup', methods=['GET', 'POST'])
 def setup_api():

@@ -34,7 +34,15 @@ def dashboard_page():
       200:
         description: HTML page rendered.
     """
-    return render_template('dashboard.html', title='AudioMuse-AI - Dashboard', active='dashboard')
+    import config
+    return render_template(
+        'dashboard.html',
+        title='AudioMuse-AI - Dashboard',
+        active='dashboard',
+        embedder_type=config.EMBEDDER_TYPE,
+        embedding_dim=config.EMBEDDING_DIMENSION,
+        mood_labels_count=len(config.MOOD_LABELS_RESOLVED),
+    )
 
 
 def _safe_rollback(cur):

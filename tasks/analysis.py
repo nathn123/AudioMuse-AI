@@ -26,9 +26,11 @@ from config import (
     TEMP_DIR, MOOD_LABELS, EMBEDDING_MODEL_PATH, PREDICTION_MODEL_PATH,
     OTHER_FEATURE_LABELS,
     REBUILD_INDEX_BATCH_SIZE, MAX_QUEUED_ANALYSIS_JOBS, PER_SONG_MODEL_RELOAD,
-    AUDIO_LOAD_TIMEOUT, LYRICS_ENABLED,
+    AUDIO_LOAD_TIMEOUT, LYRICS_ENABLED, EMBEDDER_TYPE, MAEST_MODEL_PATH,
+    MAEST_INPUT_NAME, MAEST_MOOD_LABELS, MOOD_LABELS_RESOLVED,
     ANALYSIS_MONITOR_DB_INTERVAL,
 )
+import config as _cfg  # for dynamic attributes like EMBEDDING_DIMENSION
 
 
 # Import other project modules
@@ -87,6 +89,11 @@ from .analysis_helper import (  # noqa: F401
     cleanup_musicnn_sessions,
     cleanup_optional_models,
     run_inference_with_oom_fallback,
+    # MAEST helpers
+    prepare_maest_melspectrogram,
+    run_maest_inference,
+    load_maest_session,
+    cleanup_maest_session,
 )
 
 
@@ -416,6 +423,78 @@ def analyze_track(file_path, mood_labels_list, model_paths, onnx_sessions=None, 
     return return_values
 
 
+def analyze_track_maest(file_path, mood_labels_list, onnx_sessions=None, return_audio=False):
+    """
+    Analyzes a single track using the MAEST ONNX model (single model, genre logits + embedding).
+    MAEST outputs both logits and a 1280-dim embedding from a single ONNX session.
+
+    Args:
+        file_path: Path to audio file
+        mood_labels_list: List of mood/genre labels
+        onnx_sessions: Optional dict with key 'maest' (for album-level reuse)
+        return_audio: If True, return the loaded audio array and sample rate
+    """
+    logger.info(f"[MAEST] Starting analysis for: {os.path.basename(file_path)}")
+
+    # --- 1. Load Audio and Compute Basic Features ---
+    audio, sr = robust_load_audio_with_fallback(file_path, target_sr=16000)
+    if audio is None or not np.any(audio) or audio.size == 0:
+        logger.warning(f"[MAEST] Could not load audio: {os.path.basename(file_path)}")
+        return (None, None, None, None) if return_audio else (None, None)
+
+    tempo, average_energy, musical_key, scale = extract_basic_features(audio, sr)
+
+    # --- 2. Prepare MAEST Mel Spectrogram (30s log-mel, NCHW) ---
+    try:
+        mel_input = _ah.prepare_maest_melspectrogram(audio, sr)
+        if mel_input is None:
+            logger.warning(f"[MAEST] Mel creation failed: {os.path.basename(file_path)}")
+            return (None, None, None, None) if return_audio else (None, None)
+    except Exception as e:
+        logger.error(f"[MAEST] Spectrogram creation failed: {e}")
+        return (None, None, None, None) if return_audio else (None, None)
+
+    # --- 3. Run MAEST Inference (single model) ---
+    sess = None
+    embedding = None
+    mood_logits = None
+    try:
+        if onnx_sessions is not None and 'maest' in onnx_sessions:
+            sess = onnx_sessions['maest']
+            owns_session = False
+        else:
+            sess = _ah.load_maest_session(EMBEDDING_MODEL_PATH)
+            owns_session = True
+
+        embedding, mood_logits = _ah.run_maest_inference(
+            sess, mel_input, input_name=MAEST_INPUT_NAME,
+        )
+        if embedding is None or mood_logits is None:
+            raise RuntimeError("MAEST inference returned None")
+
+        # Convert logits to probabilities
+        mood_probs = sigmoid(mood_logits)
+        moods = {label: float(score) for label, score in zip(mood_labels_list, mood_probs)}
+
+    except Exception as e:
+        logger.error(f"[MAEST] Inference failed for {os.path.basename(file_path)}: {e}", exc_info=True)
+        return (None, None, None, None) if return_audio else (None, None)
+    finally:
+        if sess is not None and owns_session:
+            _ah.cleanup_maest_session(sess, context="track end")
+
+    # --- 4. Return Results ---
+    analysis_result = {
+        "tempo": tempo,
+        "key": musical_key,
+        "scale": scale,
+        "moods": moods,
+        "energy": average_energy,
+    }
+
+    return (analysis_result, embedding, audio, sr) if return_audio else (analysis_result, embedding)
+
+
 # --- RQ Task Definitions ---
 def analyze_album_task(album_id, album_name, top_n_moods, parent_task_id):
     from .clap_analyzer import is_clap_available, get_or_cache_other_feature_text_embeddings
@@ -429,15 +508,24 @@ def analyze_album_task(album_id, album_name, top_n_moods, parent_task_id):
         tracks_analyzed_count, tracks_skipped_count, current_progress_val = 0, 0, 0
         current_task_logs = initial_details["log"]
         
-        model_paths = {'embedding': EMBEDDING_MODEL_PATH, 'prediction': PREDICTION_MODEL_PATH}
+        model_paths = {'embedding': EMBEDDING_MODEL_PATH}
+        is_maest = EMBEDDER_TYPE == 'maest'
+        if is_maest:
+            model_paths['maest'] = MAEST_MODEL_PATH
+            mood_labels_for_task = MAEST_MOOD_LABELS
+            logger.info(f"Using MAEST embedder (model={MAEST_MODEL_PATH}, dim={_cfg.EMBEDDING_DIMENSION})")
+        else:
+            model_paths['prediction'] = PREDICTION_MODEL_PATH
+            mood_labels_for_task = MOOD_LABELS
+            logger.info(f"Using MusiCNN embedder (model={EMBEDDING_MODEL_PATH}, dim=200)")
 
         clap_label_embeddings = None
 
-        onnx_sessions = None  # Lazy-loaded on first song that needs MusiCNN.
+        onnx_sessions = None  # Lazy-loaded on first song that needs analysis.
         # Recycle interval: 1 song if PER_SONG_MODEL_RELOAD else 20.
         recycle_interval = 1 if PER_SONG_MODEL_RELOAD else 20
         session_recycler = SessionRecycler(recycle_interval=recycle_interval)
-        logger.info(f"MusiCNN session recycling: every {recycle_interval} song(s) (PER_SONG_MODEL_RELOAD={PER_SONG_MODEL_RELOAD})")
+        logger.info(f"Session recycling: every {recycle_interval} song(s) (PER_SONG_MODEL_RELOAD={PER_SONG_MODEL_RELOAD})")
 
         def log_and_update_album_task(message, progress, **kwargs):
             nonlocal current_progress_val
@@ -547,22 +635,49 @@ def analyze_album_task(album_id, album_name, top_n_moods, parent_task_id):
                     track_processed = False  # MusiCNN | CLAP | Lyrics produced data?
 
                     if needs_musicnn:
-                        if onnx_sessions is None:
-                            logger.info(f"Lazy-loading MusiCNN models for album: {album_name}")
-                            onnx_sessions = load_musicnn_sessions(model_paths)
-                        elif session_recycler.should_recycle():
-                            logger.info(f"Recycling ONNX sessions after {session_recycler.get_use_count()} tracks")
-                            cleanup_musicnn_sessions(onnx_sessions, context="recycle")
-                            comprehensive_memory_cleanup(force_cuda=True, reset_onnx_pool=True)
-                            onnx_sessions = load_musicnn_sessions(model_paths)
-                            if onnx_sessions:
-                                logger.info(f"✓ Recycled {len(onnx_sessions)} MusiCNN model sessions")
-                            session_recycler.mark_recycled()
+                        if is_maest:
+                            # -- MAEST SINGLE-MODEL PATH --
+                            if onnx_sessions is None:
+                                logger.info(f"Lazy-loading MAEST model for album: {album_name}")
+                                onnx_sessions = {'maest': _ah.load_maest_session(MAEST_MODEL_PATH)}
+                            elif session_recycler.should_recycle():
+                                logger.info(f"Recycling MAEST session after {session_recycler.get_use_count()} tracks")
+                                _ah.cleanup_maest_session(onnx_sessions.get('maest'), context="recycle")
+                                comprehensive_memory_cleanup(force_cuda=True, reset_onnx_pool=True)
+                                onnx_sessions = {'maest': _ah.load_maest_session(MAEST_MODEL_PATH)}
+                                session_recycler.mark_recycled()
 
-                        if needs_lyrics and LYRICS_ENABLED:
-                            analysis, embedding, track_audio, track_sr = analyze_track(path, MOOD_LABELS, model_paths, onnx_sessions=onnx_sessions, return_audio=True)
+                            if needs_lyrics and LYRICS_ENABLED:
+                                analysis, embedding, track_audio, track_sr = analyze_track_maest(
+                                    path, mood_labels_for_task, onnx_sessions=onnx_sessions, return_audio=True,
+                                )
+                            else:
+                                analysis, embedding = analyze_track_maest(
+                                    path, mood_labels_for_task, onnx_sessions=onnx_sessions,
+                                )
                         else:
-                            analysis, embedding = analyze_track(path, MOOD_LABELS, model_paths, onnx_sessions=onnx_sessions)
+                            # -- MUSICNN DUAL-MODEL PATH --
+                            if onnx_sessions is None:
+                                logger.info(f"Lazy-loading MusiCNN models for album: {album_name}")
+                                onnx_sessions = load_musicnn_sessions(model_paths)
+                            elif session_recycler.should_recycle():
+                                logger.info(f"Recycling ONNX sessions after {session_recycler.get_use_count()} tracks")
+                                cleanup_musicnn_sessions(onnx_sessions, context="recycle")
+                                comprehensive_memory_cleanup(force_cuda=True, reset_onnx_pool=True)
+                                onnx_sessions = load_musicnn_sessions(model_paths)
+                                if onnx_sessions:
+                                    logger.info(f"✓ Recycled {len(onnx_sessions)} MusiCNN model sessions")
+                                session_recycler.mark_recycled()
+
+                            if needs_lyrics and LYRICS_ENABLED:
+                                analysis, embedding, track_audio, track_sr = analyze_track(
+                                    path, mood_labels_for_task, model_paths, onnx_sessions=onnx_sessions, return_audio=True,
+                                )
+                            else:
+                                analysis, embedding = analyze_track(
+                                    path, mood_labels_for_task, model_paths, onnx_sessions=onnx_sessions,
+                                )
+
                         if analysis is None:
                             logger.warning(f"Skipping track {track_name_full} as analysis returned None.")
                             tracks_skipped_count += 1
@@ -617,7 +732,10 @@ def analyze_album_task(album_id, album_name, top_n_moods, parent_task_id):
                     if path and os.path.exists(path):
                         os.remove(path)
 
-            cleanup_musicnn_sessions(onnx_sessions, context="album end")
+            if is_maest:
+                _ah.cleanup_maest_session(onnx_sessions.get('maest') if onnx_sessions else None, context="album end")
+            else:
+                cleanup_musicnn_sessions(onnx_sessions, context="album end")
             onnx_sessions = None
             cleanup_optional_models(context="album end")
             logger.info("Performing final comprehensive cleanup after album analysis")
@@ -638,7 +756,10 @@ def analyze_album_task(album_id, album_name, top_n_moods, parent_task_id):
             log_and_update_album_task(f"Failed to analyze album '{album_name}': {e}", current_progress_val, task_state=TASK_STATUS_FAILURE, error=err, final_summary_details={"error": str(e)})
             raise
         finally:
-            cleanup_musicnn_sessions(onnx_sessions, context="finally")
+            if is_maest:
+                _ah.cleanup_maest_session(onnx_sessions.get('maest') if onnx_sessions else None, context="finally")
+            else:
+                cleanup_musicnn_sessions(onnx_sessions, context="finally")
             onnx_sessions = None
             try:
                 comprehensive_memory_cleanup(force_cuda=True, reset_onnx_pool=True)
