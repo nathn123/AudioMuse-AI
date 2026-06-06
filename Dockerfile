@@ -66,19 +66,35 @@ RUN set -eux; \
 # even if the release asset is not yet published. Drop the model into /app/model/
 # manually to enable MAEST embedder at runtime.)
 RUN set -eux; \
+    # --- MAEST Models (required for MAEST embedder) --- \
     maest_urls=( \
-        "https://github.com/NeptuneHub/AudioMuse-AI/releases/download/v5.0.0-model/discogs-maest-30s-pw-519l-2.onnx" \
-        "https://github.com/NeptuneHub/AudioMuse-AI/releases/download/v5.0.0-model/discogs-maest-30s-pw-519l-2.json" \
+        "https://essentia.upf.edu/models/feature-extractors/maest/discogs-maest-30s-pw-519l-2.onnx" \
+        "https://essentia.upf.edu/models/feature-extractors/maest/discogs-maest-30s-pw-519l-2.json" \
     ); \
     for u in "${maest_urls[@]}"; do \
         fname="/app/model/$(basename "$u")"; \
-        if wget --no-verbose --tries=3 --retry-connrefused --waitretry=5 \
-               --header="User-Agent: AudioMuse-Docker/1.0 (+https://github.com/NeptuneHub/AudioMuse-AI)" \
-               -O "$fname" "$u"; then \
-            echo "Downloaded MAEST $u -> $fname"; \
-        else \
-            echo "WARNING: MAEST model download failed (non-fatal): $u"; \
+        n=0; \
+        until [ "$n" -ge 5 ]; do \
+            if wget --no-verbose --tries=3 --retry-connrefused --waitretry=5 \
+                --header="User-Agent: AudioMuse-Docker/1.0 (+https://github.com/NeptuneHub/AudioMuse-AI)" \
+                -O "$fname" "$u"; then \
+                break; \
+            fi; \
+            n=$((n+1)); \
+            echo "MAEST download attempt $n failed for $u — retrying in $((n*n))s"; \
+            sleep $((n*n)); \
+        done; \
+        if [ "$n" -ge 5 ]; then \
+            echo "ERROR: Failed to download MAEST model $u after 5 attempts"; \
+            exit 1; \
         fi; \
+        size=$(stat -c%s "$fname" 2>/dev/null || echo "0"); \
+        if [ "$size" -lt 10000 ]; then \
+            echo "ERROR: MAEST file $fname is too small ($size bytes). File may be corrupted."; \
+            rm -f "$fname"; \
+            exit 1; \
+        fi; \
+        echo "Downloaded MAEST $u -> $fname ($size bytes)"; \
     done
 
 # Download the HuggingFace cache tarball from the GitHub release, then trim it.
