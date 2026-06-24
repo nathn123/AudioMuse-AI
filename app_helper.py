@@ -142,6 +142,11 @@ def init_db():
             if not cur.fetchone()[0]:
                 logger.info("Adding 'file_path' column to 'score' table.")
                 cur.execute("ALTER TABLE score ADD COLUMN file_path TEXT")
+            # Add 'maest_mood_vector' column if not exists
+            cur.execute("SELECT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'score' AND column_name = 'maest_mood_vector')")
+            if not cur.fetchone()[0]:
+                logger.info("Adding 'maest_mood_vector' column to 'score' table.")
+                cur.execute("ALTER TABLE score ADD COLUMN maest_mood_vector TEXT")
         
             # Ensure we have a searchable, accent-stripped `search_u` column.
             # Postgres does not allow generated columns to call `unaccent()` (it's not marked immutable),
@@ -215,6 +220,10 @@ def init_db():
             # Create 'embedding' table
             cur.execute("CREATE TABLE IF NOT EXISTS embedding (item_id TEXT PRIMARY KEY, FOREIGN KEY (item_id) REFERENCES score (item_id) ON DELETE CASCADE)")
             cur.execute("SELECT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'embedding' AND column_name = 'embedding')")
+            if not cur.fetchone()[0]: cur.execute("ALTER TABLE embedding ADD COLUMN embedding BYTEA")
+            # Create 'maest embedding' table
+            cur.execute("CREATE TABLE IF NOT EXISTS maest_embedding (item_id TEXT PRIMARY KEY, FOREIGN KEY (item_id) REFERENCES score (item_id) ON DELETE CASCADE)")
+            cur.execute("SELECT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'maest_embedding' AND column_name = 'embedding')")
             if not cur.fetchone()[0]: cur.execute("ALTER TABLE embedding ADD COLUMN embedding BYTEA")
             # Create 'lyrics_embedding' table for lyrics similarity and axis scores
             cur.execute("CREATE TABLE IF NOT EXISTS lyrics_embedding (item_id TEXT PRIMARY KEY, FOREIGN KEY (item_id) REFERENCES score (item_id) ON DELETE CASCADE)")
@@ -1006,7 +1015,7 @@ def save_lyrics_embedding(item_id, lyrics_embedding_vector, axis_vector=None):
         cur.close()
 
 
-def get_tracks_by_ids(item_ids_list):
+def get_tracks_by_ids(item_ids_list, maest = False):
     """Fetches full track data (including embeddings) for a specific list of item_ids."""
     if not item_ids_list:
         return []
@@ -1015,13 +1024,20 @@ def get_tracks_by_ids(item_ids_list):
     
     # Convert item_ids to strings to match the text type in database
     item_ids_str = [str(item_id) for item_id in item_ids_list]
-    
-    query = """
-        SELECT s.item_id, s.title, s.author, s.album, s.album_artist, s.tempo, s.key, s.scale, s.mood_vector, s.energy, s.other_features, s.year, s.rating, s.file_path, e.embedding
-        FROM score s
-        LEFT JOIN embedding e ON s.item_id = e.item_id
-        WHERE s.item_id IN %s
-    """
+    if maest == True :
+         query = """
+            SELECT s.item_id, s.title, s.author, s.album, s.album_artist, s.tempo, s.key, s.scale, s.maest_mood_vector, s.energy, s.other_features, s.year, s.rating, s.file_path, e.embedding
+            FROM score s
+            LEFT JOIN maest_embedding e ON s.item_id = e.item_id
+            WHERE s.item_id IN %s
+        """
+    else:
+        query = """
+            SELECT s.item_id, s.title, s.author, s.album, s.album_artist, s.tempo, s.key, s.scale, s.mood_vector, s.energy, s.other_features, s.year, s.rating, s.file_path, e.embedding
+            FROM score s
+            LEFT JOIN embedding e ON s.item_id = e.item_id
+            WHERE s.item_id IN %s
+        """
     cur.execute(query, (tuple(item_ids_str),))
     rows = cur.fetchall()
     cur.close()
