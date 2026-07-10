@@ -191,6 +191,13 @@ REBUILD_INDEX_BATCH_SIZE = int(os.environ.get("REBUILD_INDEX_BATCH_SIZE", "1000"
 AUDIO_LOAD_TIMEOUT = int(os.getenv("AUDIO_LOAD_TIMEOUT", "600")) # Timeout in seconds for loading a single audio file.
 ANALYSIS_MONITOR_DB_INTERVAL = int(os.environ.get("ANALYSIS_MONITOR_DB_INTERVAL", "10")) # Min seconds between DB child-status reconciliations in the analysis monitor (0 = every poll; active jobs drain via RQ every poll regardless).
 
+# ─── Dual Model Analysis Settings ──────────────────────────────────────
+ANALYSIS_MODELS_ENABLED = ['musicnn']  # Options: ['musicnn'], ['maest'], ['musicnn', 'maest'] Default is MusicNN only for backward compatibility
+
+# ─── ONNX Session Management ─────────────────────────────────────────
+SEQUENTIAL_ANALYSIS = os.environ.get("SEQUENTIAL_ANALYSIS", "True").lower() == "true"
+
+
 # --- Guided Evolutionary Clustering Constants ---
 TOP_N_ELITES = int(os.environ.get("CLUSTERING_TOP_N_ELITES", "10")) # Number of best solutions to keep as elites
 EXPLOITATION_START_FRACTION = float(os.environ.get("CLUSTERING_EXPLOITATION_START_FRACTION", "0.2")) # Fraction of runs before starting to use elites (e.g., 0.2 means after 20% of runs)

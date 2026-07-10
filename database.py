@@ -414,41 +414,50 @@ def get_track_analysis_dual(item_id, model_type='both'):
             'maest': {'embedding': [...], 'moods': {...}}
         }
     """
-    import json
-    
+    import numpy as np
+
+    def parse_mood_vector(raw):
+        """Parse 'label:0.800,label2:0.600' string into dict."""
+        if not raw:
+            return None
+        try:
+            moods = {}
+            for pair in raw.split(','):
+                label, _, score = pair.partition(':')
+                label = label.strip()
+                if label:
+                    moods[label] = float(score)
+            return moods if moods else None
+        except (ValueError, AttributeError):
+            return None
+
     try:
         with get_db() as conn, conn.cursor() as cur:
             result = {}
             
             if model_type in ['musicnn', 'both']:
-                # Fetch MusicNN moods from score table
                 cur.execute("SELECT mood_vector FROM score WHERE item_id = %s", (str(item_id),))
                 row = cur.fetchone()
-                moods_musicnn = json.loads(row[0]) if row and row[0] else None
+                moods_musicnn = parse_mood_vector(row[0]) if row else None
                 
-                # Fetch MusicNN embedding from embedding table
                 cur.execute("SELECT embedding FROM embedding WHERE item_id = %s", (str(item_id),))
                 row = cur.fetchone()
                 emb_musicnn = None
                 if row and row[0]:
-                    import numpy as np
                     emb_musicnn = np.frombuffer(row[0], dtype=np.float32).tolist()
                 
                 if moods_musicnn or emb_musicnn:
                     result['musicnn'] = {'moods': moods_musicnn, 'embedding': emb_musicnn}
             
             if model_type in ['maest', 'both']:
-                # Fetch MAEST moods from score table
                 cur.execute("SELECT maest_mood_vector FROM score WHERE item_id = %s", (str(item_id),))
                 row = cur.fetchone()
-                moods_maest = json.loads(row[0]) if row and row[0] else None
+                moods_maest = parse_mood_vector(row[0]) if row else None
                 
-                # Fetch MAEST embedding from maest_embedding table
                 cur.execute("SELECT embedding FROM maest_embedding WHERE item_id = %s", (str(item_id),))
                 row = cur.fetchone()
                 emb_maest = None
                 if row and row[0]:
-                    import numpy as np
                     emb_maest = np.frombuffer(row[0], dtype=np.float32).tolist()
                 
                 if moods_maest or emb_maest:
@@ -459,6 +468,7 @@ def get_track_analysis_dual(item_id, model_type='both'):
     except Exception as e:
         logger.error(f"Failed to get track analysis dual for {item_id} (model={model_type}): {e}", exc_info=True)
         return None
+
 
 def get_tracks_by_ids(item_ids_list):
     """Fetches full track data (including embeddings) for a specific list of item_ids."""

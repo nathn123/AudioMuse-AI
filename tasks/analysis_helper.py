@@ -421,16 +421,27 @@ def _str_ids(ids):
     return [str(i) for i in ids]
 
 
-def get_existing_track_ids(track_ids):
-    """Return the subset of track_ids already fully analyzed by MusiCNN."""
+def get_existing_track_ids(track_ids, embedding_table='embedding'):
+    """Return the subset of track_ids that already have analysis for the given model.
+    
+    Args:
+        track_ids: List of track IDs to check
+        embedding_table: 'embedding' for MusicNN, 'maest_embedding' for MAEST
+    """
     if not track_ids:
         return set()
+    
+    # Validate against allowed tables to prevent SQL injection
+    if embedding_table not in ('embedding', 'maest_embedding'):
+        raise ValueError(f"Unknown embedding table: {embedding_table}")
+    
+    mood_column = 'maest_mood_vector' if embedding_table == 'maest_embedding' else 'mood_vector'
+    
     with get_db() as conn, conn.cursor() as cur:
         cur.execute(
-            "SELECT s.item_id FROM score s JOIN embedding e ON s.item_id = e.item_id "
+            f"SELECT s.item_id FROM score s JOIN {embedding_table} e ON s.item_id = e.item_id "
             "WHERE s.item_id IN %s AND s.other_features IS NOT NULL "
-            "AND s.energy IS NOT NULL AND s.mood_vector IS NOT NULL "
-            "AND s.tempo IS NOT NULL",
+            "AND s.energy IS NOT NULL AND s.tempo IS NOT NULL",
             (tuple(_str_ids(track_ids)),),
         )
         return {row[0] for row in cur.fetchall()}

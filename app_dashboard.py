@@ -35,13 +35,19 @@ def dashboard_page():
         description: HTML page rendered.
     """
     import config
+    
+    # ─── NEW: Pass configured models instead of single embedder type ──────────────────────────────────────
+    models_enabled = getattr(config, 'ANALYSIS_MODELS_ENABLED', ['musicnn'])
+    embedder_type = ', '.join(models_enabled).upper()  # e.g. "MUSICNN" or "MUSICNN, MAEST"
+    
     return render_template(
         'dashboard.html',
         title='AudioMuse-AI - Dashboard',
         active='dashboard',
-        embedder_type=config.EMBEDDER_TYPE,
+        embedder_type=embedder_type,
         embedding_dim=config.EMBEDDING_DIMENSION,
         mood_labels_count=len(config.MOOD_LABELS_RESOLVED),
+        models_enabled=models_enabled,  # Pass list for conditional UI logic
     )
 
 
@@ -171,7 +177,13 @@ def _collect_task_metrics(cur):
     return recent
 
 
-def _collect_content_metrics(cur):
+def _collect_content_metrics(cur, models=None):
+    """Collect content metrics. If models is None, use config defaults."""
+    import config
+    if models is None:
+        models = getattr(config, 'ANALYSIS_MODELS_ENABLED', ['musicnn'])
+    
+    # Initialize metrics dict
     metrics = {
         'total_songs': _safe_count(cur, "SELECT COUNT(*) FROM score"),
         'distinct_artists': _safe_count(cur, "SELECT COUNT(DISTINCT author) FROM score WHERE author IS NOT NULL"),
@@ -179,91 +191,86 @@ def _collect_content_metrics(cur):
         'musicnn_indexed': _get_musicnn_index_count(),
         'clap_indexed': _get_clap_index_count(),
         'gmm_indexed': _get_gmm_index_count(),
+        # ─── NEW: Per-model indexed counts ──────────────────────────────────────
+        'musicnn_mood_count': 0,
+        'maest_mood_count': 0,
     }
 
+    # ─── NEW: Count songs with mood vectors per model ──────────────────────────────────────
+    if 'musicnn' in models:
+        metrics['musicnn_mood_count'] = _safe_count(
+            cur, "SELECT COUNT(*) FROM score WHERE mood_vector IS NOT NULL AND mood_vector <> ''"
+        )
+    
+    if 'maest' in models:
+        metrics['maest_mood_count'] = _safe_count(
+            cur, "SELECT COUNT(*) FROM score WHERE maest_mood_vector IS NOT NULL AND maest_mood_vector <> ''"
+        )
+
     # Parse mood vectors to collect the two signals actually rendered by
-    # the dashboard:
-    #  - mood_dominant_counts: per-song dominant-label counts, feeds the
-    #    Genres chart.
-    #  - other_feature_totals: emotional mood scores summed across songs
-    #    (from the `other_features` column), feeds the Moods Coverage pie.
-    #
-    # Both columns are stored as plain text in the `key:value,key:value`
-    # format produced by save_track_analysis_and_embedding() in
-    # app_helper.py, so we parse that directly. We intentionally do NOT
-    # call json.loads on every row: the column is never JSON, so the
-    # exception-handling overhead would dominate the loop for large
-    # libraries. We also iterate the cursor row-by-row instead of
-    # fetchall() to keep memory usage low.
+    # the dashboard. ─── NEW: Query the appropriate column(s) based on models ──────────────────────────────────────
     mood_dominant_counts = {}
     other_feature_totals = {}
-    try:
-        cur.execute(
-            "SELECT mood_vector, other_features FROM score "
-            "WHERE mood_vector IS NOT NULL AND mood_vector <> ''"
-        )
-        for row in cur:
-            mv = row[0]
-            of = row[1]
-            if not mv:
-                continue
-            parsed = _parse_keyval(mv)
-            if not parsed:
-                continue
-            dom = max(parsed.items(), key=lambda kv: kv[1])[0]
-            mood_dominant_counts[dom] = mood_dominant_counts.get(dom, 0) + 1
+    
+    for model in models:
+        mood_column = 'maest_mood_vector' if model == 'maest' else 'mood_vector'
+        query = f"SELECT {mood_column}, other_features FROM score WHERE {mood_column} IS NOT NULL AND {mood_column} <> ''"
+        
+        try:
+            cur.execute(query)
+            for row in cur:
+                mv = row[0]
+                of = row[1]
+                if not mv:
+                    continue
+                parsed = _parse_keyval(mv)
+                if not parsed:
+                    continue
+                dom = max(parsed.items(), key=lambda kv: kv[1])[0]
+                # Optionally prefix with model if both enabled
+                key = f"[{model.upper()}] {dom}" if len(models) > 1 else dom
+                mood_dominant_counts[key] = mood_dominant_counts.get(key, 0) + 1
 
-            # --- emotional mood vector (other_features) ---
-            if of:
-                of_parsed = _parse_keyval(of)
-                for k, s in of_parsed.items():
-                    # Skip non-emotional scalar helpers
-                    if k in ('tempo_normalized', 'energy_normalized'):
-                        continue
-                    other_feature_totals[k] = other_feature_totals.get(k, 0.0) + s
-    except Exception as e:
-        logger.debug(f"dashboard: mood aggregation failed: {e}")
-        _safe_rollback(cur)
+                # --- emotional mood vector (other_features) ---
+                if of:
+                    of_parsed = _parse_keyval(of)
+                    for k, s in of_parsed.items():
+                        if k in ('tempo_normalized', 'energy_normalized'):
+                            continue
+                        other_feature_totals[k] = other_feature_totals.get(k, 0.0) + s
+        except Exception as e:
+            logger.debug(f"dashboard: mood aggregation for {model} failed: {e}")
+            _safe_rollback(cur)
 
-    # Genre breakdown: dominant-mood counts from mood_vector (genre-like labels).
+    # Genre breakdown: dominant-mood counts from mood_vector
     top_genre = sorted(mood_dominant_counts.items(), key=lambda kv: kv[1], reverse=True)
     metrics['top_genre'] = [{'label': k, 'count': int(v)} for k, v in top_genre]
-    # Moods Coverage: emotional mood vector (other_features):
-    # danceable / aggressive / happy / party / relaxed / sad.
+    
+    # Moods Coverage: emotional mood vector (other_features)
     emotional = sorted(other_feature_totals.items(), key=lambda kv: kv[1], reverse=True)
     metrics['moods_coverage'] = [
         {'label': k, 'score': round(v, 2)} for k, v in emotional
     ]
 
-    # Tempo profile: bucket songs into slow/medium/fast/very-fast. Always
-    # populate the key so the UI can render a real (possibly-zero) chart
-    # rather than the "still collecting" placeholder when no songs have
-    # a tempo yet.
+    # Tempo profile
     metrics['tempo_profile'] = {
-        'slow': 0,
-        'medium': 0,
-        'fast': 0,
-        'very_fast': 0,
-        'avg_tempo': None,
+        'slow': 0, 'medium': 0, 'fast': 0, 'very_fast': 0, 'avg_tempo': None,
     }
     try:
-        cur.execute(
-            "SELECT "
-            "  COUNT(*) FILTER (WHERE tempo > 0 AND tempo < 85) AS slow, "
-            "  COUNT(*) FILTER (WHERE tempo >= 85 AND tempo < 110) AS medium, "
-            "  COUNT(*) FILTER (WHERE tempo >= 110 AND tempo < 140) AS fast, "
-            "  COUNT(*) FILTER (WHERE tempo >= 140) AS very_fast, "
-            "  AVG(tempo) FILTER (WHERE tempo > 0) AS avg_tempo "
-            "FROM score WHERE tempo IS NOT NULL"
-        )
+        cur.execute("""
+            SELECT 
+              COUNT(*) FILTER (WHERE tempo > 0 AND tempo < 85) AS slow,
+              COUNT(*) FILTER (WHERE tempo >= 85 AND tempo < 110) AS medium,
+              COUNT(*) FILTER (WHERE tempo >= 110 AND tempo < 140) AS fast,
+              COUNT(*) FILTER (WHERE tempo >= 140) AS very_fast,
+              AVG(tempo) FILTER (WHERE tempo > 0) AS avg_tempo
+            FROM score WHERE tempo IS NOT NULL
+        """)
         r = cur.fetchone()
         if r:
             metrics['tempo_profile'] = {
-                'slow': int(r[0] or 0),
-                'medium': int(r[1] or 0),
-                'fast': int(r[2] or 0),
-                'very_fast': int(r[3] or 0),
-                'avg_tempo': round(float(r[4]), 1) if r[4] is not None else None,
+                'slow': int(r[0] or 0), 'medium': int(r[1] or 0), 'fast': int(r[2] or 0),
+                'very_fast': int(r[3] or 0), 'avg_tempo': round(float(r[4]), 1) if r[4] is not None else None,
             }
     except Exception as e:
         logger.warning(f"dashboard: tempo profile query failed: {e}", exc_info=True)
@@ -416,7 +423,9 @@ def refresh_dashboard_stats(app):
             db = get_db()
             cur = db.cursor(cursor_factory=DictCursor)
             try:
-                content = _collect_content_metrics(cur)
+                # ─── NEW: Pass configured models ──────────────────────────────────────
+                models = getattr(config, 'ANALYSIS_MODELS_ENABLED', ['musicnn'])
+                content = _collect_content_metrics(cur, models=models)
             finally:
                 cur.close()
 

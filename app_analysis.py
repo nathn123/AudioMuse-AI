@@ -93,27 +93,35 @@ def start_analysis_endpoint():
         }), 409
 
     data = request.json or {}
-    # MODIFIED: Removed jellyfin_url, jellyfin_user_id, and jellyfin_token as they are no longer passed to the task.
-    # The task now gets these details from the central config.
     num_recent_albums = int(data.get('num_recent_albums', NUM_RECENT_ALBUMS))
     top_n_moods = int(data.get('top_n_moods', TOP_N_MOODS))
-    logger.info(f"Starting analysis request: num_recent_albums={num_recent_albums}, top_n_moods={top_n_moods}")
+    
+    # ─── NEW: Parse model selection ──────────────────────────────────────
+    models_param = data.get('analysis_models')
+    if models_param is None:
+        models_enabled = ANALYSIS_MODELS_ENABLED  # Config default
+    elif models_param == 'both':
+        models_enabled = ['musicnn', 'maest']
+    elif models_param == 'maest':
+        models_enabled = ['maest']
+    else:  # 'musicnn' or default
+        models_enabled = ['musicnn']
+    
+    logger.info(f"Starting analysis: num_recent_albums={num_recent_albums}, top_n_moods={top_n_moods}, models={models_enabled}")
 
     job_id = str(uuid.uuid4())
 
-    # Clean up details of previously successful or stale tasks before starting a new one
     clean_up_previous_main_tasks()
     save_task_status(job_id, "main_analysis", TASK_STATUS_PENDING, details={"message": "Task enqueued."})
 
-    # Enqueue task using a string path to its function.
-    # MODIFIED: The arguments passed to the task are updated to match the new function signature.
+    # ─── NEW: Pass models_enabled as third argument ──────────────────────────────────────
     job = rq_queue_high.enqueue(
         'tasks.analysis.run_analysis_task',
-        args=(num_recent_albums, top_n_moods),
+        args=(num_recent_albums, top_n_moods, models_enabled),
         job_id=job_id,
         description="Main Music Analysis",
         retry=Retry(max=3),
-        job_timeout=-1 # No timeout
+        job_timeout=-1
     )
     return jsonify({"task_id": job.id, "task_type": "main_analysis", "status": job.get_status()}), 202
 

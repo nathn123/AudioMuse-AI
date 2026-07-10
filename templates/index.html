@@ -41,6 +41,22 @@
                         <input type="number" id="config-top_n_moods">
                     </div>
                 </div>
+                <div class="param-group">
+                    <div class="advanced-param hidden">
+                        <label for="config-analysis_models" class="label-with-tooltip">
+                            Analysis Models:
+                            <span class="info-tooltip" tabindex="0">
+                                <span class="info-icon"></span>
+                                <span class="tooltip-text">Choose which AI models to run during analysis. MusicNN is the original model (50 mood labels). MAEST is the newer genre-aware model (519 genre logits). Select 'Both' to run both models simultaneously (requires more processing time and VRAM).</span>
+                            </span>
+                        </label>
+                        <select id="config-analysis_models">
+                            <option value="musicnn" selected>MusicNN Only</option>
+                            <option value="maest">MAEST Only</option>
+                            <option value="both">Both Models</option>
+                        </select>
+                    </div>
+                </div>
             </fieldset>
 
             <fieldset>
