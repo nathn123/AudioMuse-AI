@@ -19,6 +19,7 @@ services:
       NVIDIA_VISIBLE_DEVICES: "0"
       NVIDIA_DRIVER_CAPABILITIES: "compute,utility"
       USE_GPU_CLUSTERING: "${USE_GPU_CLUSTERING:-true}"
+      SEQUENTIAL_ANALYSIS: "${SEQUENTIAL_ANALYSIS:-true}"
       TEMP_DIR: "/app/temp_audio"
     volumes:
       - temp-audio-worker:/app/temp_audio

@@ -17,6 +17,7 @@ services:
       POSTGRES_PORT: "${POSTGRES_PORT:-5432}"
       REDIS_URL: "${REDIS_URL:-redis://redis:6379/0}"
       USE_GPU_CLUSTERING: "${USE_GPU_CLUSTERING:-false}"
+      SEQUENTIAL_ANALYSIS: "${SEQUENTIAL_ANALYSIS:-true}"
       TEMP_DIR: "/app/temp_audio"
     volumes:
       - temp-audio-worker:/app/temp_audio
