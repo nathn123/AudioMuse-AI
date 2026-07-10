@@ -625,6 +625,8 @@ def persist_musicnn_results(item, analysis, top_moods, embedding, other_features
     save_track_analysis_and_embedding(
         item['Id'], item['Name'], item.get('AlbumArtist', 'Unknown'),
         analysis['tempo'], analysis['key'], analysis['scale'], top_moods, embedding,
+        mood_column='mood_vector',
+        embedding_table='embedding',
         energy=analysis['energy'],
         other_features=other_features_str,
         album=item.get('Album') or item.get('album'),
@@ -634,6 +636,21 @@ def persist_musicnn_results(item, analysis, top_moods, embedding, other_features
         file_path=item.get('FilePath'),
     )
 
+def persist_maest_results(item, analysis, top_moods, embedding, other_features_str):
+    """Save MAEST analysis + embedding via app_helper."""
+    save_track_analysis_and_embedding(
+        item['Id'], item['Name'], item.get('AlbumArtist', 'Unknown'),
+        analysis['tempo'], analysis['key'], analysis['scale'], top_moods, embedding,
+        mood_column='maest_mood_vector',  # Column on score table
+        embedding_table='maest_embedding',  # Column on score table (not separate table!)
+        energy=analysis['energy'],
+        other_features=other_features_str,
+        album=item.get('Album') or item.get('album'),
+        album_artist=item.get('OriginalAlbumArtist') or item.get('originalAlbumArtist') or item.get('album_artist'),
+        year=item.get('Year'),
+        rating=item.get('Rating'),
+        file_path=item.get('FilePath'),
+    )
 
 def persist_clap_embedding(item_id, embedding, needs_clap):
     """Save CLAP embedding (after the score row exists). Returns True on success."""

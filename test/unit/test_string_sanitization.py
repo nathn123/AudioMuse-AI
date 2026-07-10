@@ -31,11 +31,13 @@ class TestSaveTrackStringSanitization:
         other_features = "feature1:0.5\x00,feature2:0.8"
         moods = {"happy": 0.8, "energetic": 0.6}
         embedding = np.array([0.1, 0.2, 0.3])
+        mood_column='mood_vector'
+        embedding_table='embedding'
         
         # Call the function
         save_track_analysis_and_embedding(
             item_id, title, author, 120.0, key, scale, 
-            moods, embedding, energy=0.5, other_features=other_features, album=album
+            moods, embedding, mood_column, embedding_table, energy=0.5, other_features=other_features, album=album
         )
         
         # Verify that NUL bytes were removed from the database call
@@ -70,7 +72,7 @@ class TestSaveTrackStringSanitization:
         
         save_track_analysis_and_embedding(
             "test_id", title, author, 120.0, "C", "major",
-            {"happy": 0.5}, np.array([0.1, 0.2])
+            {"happy": 0.5}, np.array([0.1, 0.2]), 'mood_vector', 'embedding'
         )
         
         call_args = mock_cur.execute.call_args_list[0]
@@ -91,7 +93,7 @@ class TestSaveTrackStringSanitization:
         
         save_track_analysis_and_embedding(
             "test_id", None, None, 120.0, None, None,
-            {"happy": 0.5}, np.array([0.1, 0.2]), 
+            {"happy": 0.5}, np.array([0.1, 0.2]), 'mood_vector', 'embedding',
             energy=None, other_features=None
         )
         
@@ -122,7 +124,7 @@ class TestSaveTrackStringSanitization:
         
         save_track_analysis_and_embedding(
             "test_id", long_title, long_author, 120.0, "C", "major",
-            {"happy": 0.5}, np.array([0.1, 0.2]), 
+            {"happy": 0.5}, np.array([0.1, 0.2]), 'mood_vector', 'embedding', 
             other_features=long_other
         )
         
@@ -147,7 +149,7 @@ class TestSaveTrackStringSanitization:
         save_track_analysis_and_embedding(
             "test_id", "  Song Title  ", "  Artist Name  ", 
             120.0, "  C  ", "  major  ",
-            {"happy": 0.5}, np.array([0.1, 0.2])
+            {"happy": 0.5}, np.array([0.1, 0.2]), 'mood_vector', 'embedding'
         )
         
         call_args = mock_cur.execute.call_args_list[0]
@@ -173,7 +175,7 @@ class TestSaveTrackStringSanitization:
         
         save_track_analysis_and_embedding(
             "test_id", title, author, 120.0, "C", "major",
-            {"happy": 0.5}, np.array([0.1, 0.2])
+            {"happy": 0.5}, np.array([0.1, 0.2]), 'mood_vector', 'embedding'
         )
         
         call_args = mock_cur.execute.call_args_list[0]

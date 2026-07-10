@@ -494,6 +494,80 @@ def analyze_track_maest(file_path, mood_labels_list, onnx_sessions=None, return_
 
     return (analysis_result, embedding, audio, sr) if return_audio else (analysis_result, embedding)
 
+def analyze_track_comprehensive(
+    file_path, 
+    mood_labels_list, 
+    model_paths,
+    models_to_run=None,  # ['musicnn'], ['maest'], or ['musicnn', 'maest']
+    onnx_sessions=None,
+    return_audio=False
+):
+    """
+    Analyze track with configurable model selection.
+    Calls existing analyze_track() and/or analyze_track_maest() internally.
+    
+    Args:
+        file_path: Path to audio file
+        mood_labels_list: List of mood labels
+        model_paths: Dict of model paths {'embedding': ..., 'prediction': ...}
+        models_to_run: List of models to execute. Default None = run both.
+        onnx_sessions: Optional dict with pre-loaded sessions
+        return_audio: If True, return audio data
+    
+    Returns:
+        {
+            'basic': {'tempo': ..., 'key': ..., 'scale': ..., 'energy': ...},
+            'musicnn': {'embedding': ..., 'moods': ...},  # or None
+            'maest': {'embedding': ..., 'moods': ...}      # or None
+        }
+    """
+    import numpy as np
+    
+    logger.info(f"[Comprehensive] Starting analysis for: {os.path.basename(file_path)}")
+    
+    # 1. Shared: Load audio + extract_basic_features
+    audio, sr = robust_load_audio_with_fallback(file_path, target_sr=16000)
+    if audio is None or not np.any(audio) or audio.size == 0:
+        logger.warning(f"[Comprehensive] Could not load audio: {os.path.basename(file_path)}")
+        return None
+    
+    tempo, average_energy, musical_key, scale = extract_basic_features(audio, sr)
+    
+    # 2. Initialize result container
+    result = {
+        'basic': {
+            'tempo': tempo,
+            'key': musical_key,
+            'scale': scale,
+            'energy': average_energy
+        },
+        'musicnn': None,
+        'maest': None
+    }
+    
+    # 3. Run selected models
+    if models_to_run is None or 'musicnn' in models_to_run:
+        musicnn_out = analyze_track(
+            file_path, mood_labels_list, model_paths,
+            onnx_sessions, return_audio=False
+        )
+        if musicnn_out and musicnn_out[0] is not None:
+            result['musicnn'] = {
+                'embedding': musicnn_out[1].tolist() if musicnn_out[1] is not None else None,
+                'moods': musicnn_out[0]['moods']
+            }
+    
+    if models_to_run is None or 'maest' in models_to_run:
+        maest_out = analyze_track_maest(
+            file_path, mood_labels_list, onnx_sessions, return_audio=False
+        )
+        if maest_out and maest_out[0] is not None:
+            result['maest'] = {
+                'embedding': maest_out[1].tolist() if maest_out[1] is not None else None,
+                'moods': maest_out[0]['moods']
+            }
+    
+    return result
 
 # --- RQ Task Definitions ---
 def analyze_album_task(album_id, album_name, top_n_moods, parent_task_id):

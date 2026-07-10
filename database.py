@@ -400,6 +400,65 @@ def get_score_data_by_ids(item_ids_list):
         cur.close()
     return [dict(row) for row in rows]
 
+def get_track_analysis_dual(item_id, model_type='both'):
+    """
+    Retrieve analysis filtered by model selection.
+    
+    Args:
+        item_id: Track identifier (string)
+        model_type: 'musicnn', 'maest', or 'both'
+    
+    Returns:
+        {
+            'musicnn': {'embedding': [...], 'moods': {...}},
+            'maest': {'embedding': [...], 'moods': {...}}
+        }
+    """
+    import json
+    
+    try:
+        with get_db() as conn, conn.cursor() as cur:
+            result = {}
+            
+            if model_type in ['musicnn', 'both']:
+                # Fetch MusicNN moods from score table
+                cur.execute("SELECT mood_vector FROM score WHERE item_id = %s", (str(item_id),))
+                row = cur.fetchone()
+                moods_musicnn = json.loads(row[0]) if row and row[0] else None
+                
+                # Fetch MusicNN embedding from embedding table
+                cur.execute("SELECT embedding FROM embedding WHERE item_id = %s", (str(item_id),))
+                row = cur.fetchone()
+                emb_musicnn = None
+                if row and row[0]:
+                    import numpy as np
+                    emb_musicnn = np.frombuffer(row[0], dtype=np.float32).tolist()
+                
+                if moods_musicnn or emb_musicnn:
+                    result['musicnn'] = {'moods': moods_musicnn, 'embedding': emb_musicnn}
+            
+            if model_type in ['maest', 'both']:
+                # Fetch MAEST moods from score table
+                cur.execute("SELECT maest_mood_vector FROM score WHERE item_id = %s", (str(item_id),))
+                row = cur.fetchone()
+                moods_maest = json.loads(row[0]) if row and row[0] else None
+                
+                # Fetch MAEST embedding from maest_embedding table
+                cur.execute("SELECT embedding FROM maest_embedding WHERE item_id = %s", (str(item_id),))
+                row = cur.fetchone()
+                emb_maest = None
+                if row and row[0]:
+                    import numpy as np
+                    emb_maest = np.frombuffer(row[0], dtype=np.float32).tolist()
+                
+                if moods_maest or emb_maest:
+                    result['maest'] = {'moods': moods_maest, 'embedding': emb_maest}
+            
+            return result if result else None
+            
+    except Exception as e:
+        logger.error(f"Failed to get track analysis dual for {item_id} (model={model_type}): {e}", exc_info=True)
+        return None
 
 def get_tracks_by_ids(item_ids_list):
     """Fetches full track data (including embeddings) for a specific list of item_ids."""
@@ -501,7 +560,7 @@ def load_map_projection(index_name, force_reload=False):
 # Analysis and embedding utilities
 # ---------------------------------------------------------------------------
 
-def save_track_analysis_and_embedding(item_id, title, author, tempo, key, scale, moods, embedding_vector, energy=None, other_features=None, album=None, album_artist=None, year=None, rating=None, file_path=None):
+def save_track_analysis_and_embedding(item_id, title, author, tempo, key, scale, moods, embedding_vector, mood_column, embedding_table, energy=None, other_features=None, album=None, album_artist=None, year=None, rating=None, file_path=None):
     """Saves track analysis and embedding in a single transaction."""
 
     # Sanitize all string inputs with field-specific limits
@@ -512,6 +571,12 @@ def save_track_analysis_and_embedding(item_id, title, author, tempo, key, scale,
     key = sanitize_db_field(key, max_length=10, field_name="key")
     scale = sanitize_db_field(scale, max_length=10, field_name="scale")
     other_features = sanitize_db_field(other_features, max_length=2000, field_name="other_features")
+
+    # ensure known values are used
+    if mood_column not in ('mood_vector', 'maest_mood_vector'):
+        raise ValueError(f"Invalid mood_column: {mood_column}")
+    if embedding_table not in ('embedding', 'maest_embedding'):
+        raise ValueError(f"Invalid embedding_table: {embedding_table}")
 
     # year: parse from various date formats and validate
     def _parse_year_from_date(year_value):
@@ -582,8 +647,8 @@ def save_track_analysis_and_embedding(item_id, title, author, tempo, key, scale,
     cur = conn.cursor()
     try:
         # Save analysis to score table
-        cur.execute("""
-            INSERT INTO score (item_id, title, author, tempo, key, scale, mood_vector, energy, other_features, album, album_artist, year, rating, file_path)
+        cur.execute(f"""
+            INSERT INTO score (item_id, title, author, tempo, key, scale, {mood_column}, energy, other_features, album, album_artist, year, rating, file_path)
             VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             ON CONFLICT (item_id) DO UPDATE SET
                 title = EXCLUDED.title,
@@ -591,7 +656,7 @@ def save_track_analysis_and_embedding(item_id, title, author, tempo, key, scale,
                 tempo = EXCLUDED.tempo,
                 key = EXCLUDED.key,
                 scale = EXCLUDED.scale,
-                mood_vector = EXCLUDED.mood_vector,
+                {mood_column} = EXCLUDED.{mood_column},
                 energy = EXCLUDED.energy,
                 other_features = EXCLUDED.other_features,
                 album = EXCLUDED.album,
@@ -604,8 +669,8 @@ def save_track_analysis_and_embedding(item_id, title, author, tempo, key, scale,
         # Save embedding
         if isinstance(embedding_vector, np.ndarray) and embedding_vector.size > 0:
             embedding_blob = embedding_vector.astype(np.float32).tobytes()
-            cur.execute("""
-                INSERT INTO embedding (item_id, embedding) VALUES (%s, %s)
+            cur.execute(f"""
+                INSERT INTO {embedding_table} (item_id, embedding) VALUES (%s, %s)
                 ON CONFLICT (item_id) DO UPDATE SET embedding = EXCLUDED.embedding
             """, (item_id, psycopg2.Binary(embedding_blob)))
 
@@ -764,6 +829,11 @@ def init_db():
             if not cur.fetchone()[0]:
                 logger.info("Adding 'file_path' column to 'score' table.")
                 cur.execute("ALTER TABLE score ADD COLUMN file_path TEXT")
+            # Add 'maest_mood_vector' column if not exists
+            cur.execute("SELECT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'score' AND column_name = 'maest_mood_vector')")
+            if not cur.fetchone()[0]:
+                logger.info("Adding 'maest_mood_vector' column to 'score' table.")
+                cur.execute("ALTER TABLE score ADD COLUMN maest_mood_vector TEXT")
         
             # Ensure we have a searchable, accent-stripped `search_u` column.
             # Postgres does not allow generated columns to call `unaccent()` (it's not marked immutable),
@@ -862,6 +932,10 @@ def init_db():
             cur.execute("CREATE TABLE IF NOT EXISTS embedding (item_id TEXT PRIMARY KEY, FOREIGN KEY (item_id) REFERENCES score (item_id) ON DELETE CASCADE)")
             cur.execute("SELECT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'embedding' AND column_name = 'embedding')")
             if not cur.fetchone()[0]: cur.execute("ALTER TABLE embedding ADD COLUMN embedding BYTEA")
+            # Create 'maest_embedding' table
+            cur.execute("CREATE TABLE IF NOT EXISTS maest_embedding (item_id TEXT PRIMARY KEY, FOREIGN KEY (item_id) REFERENCES score (item_id) ON DELETE CASCADE)")
+            cur.execute("SELECT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'maest_embedding' AND column_name = 'embedding')")
+            if not cur.fetchone()[0]: cur.execute("ALTER TABLE maest_embedding ADD COLUMN embedding BYTEA")
             # Create 'lyrics_embedding' table for lyrics similarity and axis scores
             cur.execute("CREATE TABLE IF NOT EXISTS lyrics_embedding (item_id TEXT PRIMARY KEY, FOREIGN KEY (item_id) REFERENCES score (item_id) ON DELETE CASCADE)")
             cur.execute("SELECT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'lyrics_embedding' AND column_name = 'embedding')")
