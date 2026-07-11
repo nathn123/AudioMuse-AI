@@ -273,7 +273,7 @@ def rebuild_all_indexes_task():
             logger.error(f"❌ Index rebuild task failed: {e}", exc_info=True)
             return {"status": "FAILURE", "message": str(e)}
 
-def analyze_track(file_path, mood_labels_list, model_paths, onnx_sessions=None, return_audio=False):
+def analyze_track(file_path, mood_labels_list, model_paths,tempo, average_energy, musical_key, scale, onnx_sessions=None, return_audio=False):
     """
     Analyzes a single track using ONNX Runtime for inference.
     
@@ -292,8 +292,6 @@ def analyze_track(file_path, mood_labels_list, model_paths, onnx_sessions=None, 
     if audio is None or not np.any(audio) or audio.size == 0:
         logger.warning(f"Could not load a valid audio signal for {os.path.basename(file_path)} after all attempts. Skipping track.")
         return (None, None, None, None) if return_audio else (None, None)
-
-    tempo, average_energy, musical_key, scale = extract_basic_features(audio, sr)
 
     # --- 2. Prepare Spectrograms ---
     try:
@@ -423,7 +421,7 @@ def analyze_track(file_path, mood_labels_list, model_paths, onnx_sessions=None, 
     return return_values
 
 
-def analyze_track_maest(file_path, mood_labels_list, onnx_sessions=None, return_audio=False):
+def analyze_track_maest(file_path, mood_labels_list,tempo, average_energy, musical_key, scale, onnx_sessions=None, return_audio=False):
     """
     Analyzes a single track using the MAEST ONNX model (single model, genre logits + embedding).
     MAEST outputs both logits and a 1280-dim embedding from a single ONNX session.
@@ -441,8 +439,6 @@ def analyze_track_maest(file_path, mood_labels_list, onnx_sessions=None, return_
     if audio is None or not np.any(audio) or audio.size == 0:
         logger.warning(f"[MAEST] Could not load audio: {os.path.basename(file_path)}")
         return (None, None, None, None) if return_audio else (None, None)
-
-    tempo, average_energy, musical_key, scale = extract_basic_features(audio, sr)
 
     # --- 2. Prepare MAEST Mel Spectrogram (30s log-mel, NCHW) ---
     try:
@@ -523,6 +519,12 @@ def analyze_track_comprehensive(
     """
     import numpy as np
     
+    # Resolve per-model mood labels when caller passes None (DUAL mode).
+    _mood_labels_map = {
+        'musicnn': MOOD_LABELS,
+        'maest': MAEST_MOOD_LABELS,
+    }
+
     logger.info(f"[Comprehensive] Starting analysis for: {os.path.basename(file_path)}")
     
     # 1. Shared: Load audio + extract_basic_features
@@ -544,25 +546,44 @@ def analyze_track_comprehensive(
         'musicnn': None,
         'maest': None
     }
+
+    # Attach audio for lyrics processing if requested
+    if return_audio:
+        result['audio'] = audio
+        result['sr'] = sr
     
-    # 3. Run selected models
+    basic_fields = result['basic']
+    
     if models_to_run is None or 'musicnn' in models_to_run:
+        # Unwrap musicnn sessions from DUAL-mode mixed dict.
+        # In sequential mode, onnx_sessions IS the musicnn dict (has 'embedding'/'prediction').
+        # In DUAL mode, onnx_sessions has a 'musicnn' key wrapping the inner dict.
+        musicnn_sessions = onnx_sessions
+        if onnx_sessions is not None and 'musicnn' in onnx_sessions:
+            musicnn_sessions = onnx_sessions['musicnn']
+
+        musicnn_labels = mood_labels_list if mood_labels_list is not None else _mood_labels_map['musicnn']
+
         musicnn_out = analyze_track(
-            file_path, mood_labels_list, model_paths,
-            onnx_sessions, return_audio=False
+            file_path, musicnn_labels, model_paths, tempo, average_energy, musical_key, scale,
+            musicnn_sessions, return_audio=False
         )
         if musicnn_out and musicnn_out[0] is not None:
             result['musicnn'] = {
+                **basic_fields,
                 'embedding': musicnn_out[1].tolist() if musicnn_out[1] is not None else None,
                 'moods': musicnn_out[0]['moods']
             }
     
     if models_to_run is None or 'maest' in models_to_run:
+        maest_labels = mood_labels_list if mood_labels_list is not None else _mood_labels_map['maest']
+
         maest_out = analyze_track_maest(
-            file_path, mood_labels_list, onnx_sessions, return_audio=False
+            file_path, maest_labels, tempo, average_energy, musical_key, scale, onnx_sessions, return_audio=False
         )
         if maest_out and maest_out[0] is not None:
             result['maest'] = {
+                **basic_fields,
                 'embedding': maest_out[1].tolist() if maest_out[1] is not None else None,
                 'moods': maest_out[0]['moods']
             }
@@ -570,30 +591,37 @@ def analyze_track_comprehensive(
     return result
 
 # --- RQ Task Definitions ---
-def analyze_album_task(album_id, album_name, top_n_moods, parent_task_id):
-    from .clap_analyzer import is_clap_available, get_or_cache_other_feature_text_embeddings
+def analyze_album_task(album_id, album_name, top_n_moods, parent_task_id, models_enabled=None):
+    from .clap_analyzer import (
+        is_clap_available, get_or_cache_other_feature_text_embeddings,
+    )
+
+    from .analysis_helper import (persist_musicnn_results, persist_maest_results,
+    run_clap_for_track, compute_other_features_str, persist_clap_embedding,run_lyrics_for_track,
+    )
+
 
     current_job = get_current_job(redis_conn)
     current_task_id = current_job.id if current_job else str(uuid.uuid4())
 
     with app.app_context():
         # ─── DUAL-MODE CONFIG ──────────────────────────────────────
-        if not isinstance(models_enabled, list):
+        if models_enabled is None or not isinstance(models_enabled, list):
             models_enabled = ['musicnn']
         sequential_mode = os.getenv('SEQUENTIAL_ANALYSIS', 'true').lower() == 'true'
-        
+
         logger.info(f"[AlbumTask] Models: {models_enabled} | Sequential: {sequential_mode}")
-        
+
         initial_details = {"album_name": album_name, "log": [f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] Album analysis task started."]}
         save_task_status(current_task_id, "album_analysis", TASK_STATUS_STARTED, parent_task_id=parent_task_id, sub_type_identifier=album_id, progress=0, details=initial_details)
         tracks_analyzed_count, tracks_skipped_count, current_progress_val = 0, 0, 0
         current_task_logs = initial_details["log"]
 
         # Build model paths dict (both models if dual)
-        model_paths = {'embedding': EMBEDDING_MODEL_PATH}
+        model_paths = {'embedding': EMBEDDING_MODEL_PATH, 'prediction': PREDICTION_MODEL_PATH}
         if 'maest' in models_enabled:
             model_paths['maest'] = MAEST_MODEL_PATH
-        
+
         mood_labels_map = {
             'musicnn': MOOD_LABELS,
             'maest': MAEST_MOOD_LABELS
@@ -628,13 +656,13 @@ def analyze_album_task(album_id, album_name, top_n_moods, parent_task_id):
                 return {"status": "SUCCESS", "message": f"No tracks in album {album_name}", "tracks_analyzed": 0}
 
             track_ids_all = [str(t['Id']) for t in tracks]
-            
+
             # ─── FIX: Define existing_by_model for per-model completion tracking ──────────────────────────────────────
             existing_by_model = {}
             for model_type in models_enabled:
                 emb_table = 'maest_embedding' if model_type == 'maest' else 'embedding'
                 existing_by_model[model_type] = _ah.get_existing_track_ids(track_ids_all, embedding_table=emb_table)
-            
+
             missing_clap_ids_set = _ah.get_missing_ids_in_table('clap_embedding', track_ids_all) if is_clap_available() else set()
             missing_lyrics_ids_set = _ah.get_missing_ids_in_table('lyrics_embedding', track_ids_all) if LYRICS_ENABLED else set()
             total_tracks_in_album = len(tracks)
@@ -663,35 +691,153 @@ def analyze_album_task(album_id, album_name, top_n_moods, parent_task_id):
                         if needed_ids:
                             existing_top_moods_by_id.update(_ah.fetch_existing_top_moods(needed_ids, top_n_moods))
 
-        # ─── SEQUENTIAL MODE: one model at a time ──────────────────────────────────────
-        if sequential_mode:
-            logger.info("Running in SEQUENTIAL mode (one model per pass)")
-            
-            for model_type in models_enabled:
-                logger.info(f"[Sequential Pass] Starting {model_type.upper()} model")
-                emb_table = 'maest_embedding' if model_type == 'maest' else 'embedding'
-                mood_labels = mood_labels_map[model_type]
-                
-                # Get tracks that need THIS model specifically
-                existing_ids = existing_by_model[model_type]
-                tracks_to_process = [t for t in tracks if str(t['Id']) not in existing_ids]
-                
-                if not tracks_to_process:
-                    logger.info(f"All tracks already have {model_type} analysis, skipping")
-                    continue
-                
-                # Load model session
-                if model_type == 'maest':
-                    onnx_sessions = {'maest': _ah.load_maest_session(MAEST_MODEL_PATH)}
-                    cleanup_fn = lambda sess: _ah.cleanup_maest_session(sess, context="model end")
-                else:
-                    onnx_sessions = load_musicnn_sessions(model_paths)
-                    cleanup_fn = lambda sess: cleanup_musicnn_sessions(sess, context="model end")
-                
-                session_recycler.reset()  # Fresh counter for this model
-                
+            # ─── SEQUENTIAL MODE: one model at a time ──────────────────────────────────────
+            if sequential_mode:
+                logger.info("Running in SEQUENTIAL mode (one model per pass)")
+
+                for model_type in models_enabled:
+                    logger.info(f"[Sequential Pass] Starting {model_type.upper()} model")
+                    mood_labels = mood_labels_map[model_type]
+
+                    # Get tracks that need THIS model specifically
+                    existing_ids = existing_by_model[model_type]
+                    tracks_to_process = [t for t in tracks if str(t['Id']) not in existing_ids]
+
+                    if not tracks_to_process:
+                        logger.info(f"All tracks already have {model_type} analysis, skipping")
+                        continue
+
+                    # Load model session
+                    if model_type == 'maest':
+                        onnx_sessions = {'maest': _ah.load_maest_session(MAEST_MODEL_PATH)}
+                        cleanup_fn = lambda sess: _ah.cleanup_maest_session(sess, context="model end")
+                    else:
+                        onnx_sessions = load_musicnn_sessions(model_paths)
+                        cleanup_fn = lambda sess: cleanup_musicnn_sessions(sess, context="model end")
+
+                    session_recycler.reset()  # Fresh counter for this model
+
+                    try:
+                        for idx, item in enumerate(tracks_to_process, 1):
+                            # Job cancellation check
+                            if current_job:
+                                task_info = get_task_info_from_db(current_task_id)
+                                parent_info = get_task_info_from_db(parent_task_id) if parent_task_id else None
+                                if (task_info and task_info.get('status') == 'REVOKED') or (parent_info and parent_info.get('status') in ['REVOKED', 'FAILURE']):
+                                    log_and_update_album_task(f"Stopping album analysis for '{album_name}' due to parent/self revocation.", current_progress_val, task_state=TASK_STATUS_REVOKED)
+                                    return {"status": "REVOKED"}
+
+                            track_name_full = f"{item['Name']} by {item.get('AlbumArtist', 'Unknown')}"
+                            progress = 10 + int(85 * ((idx) / float(len(tracks_to_process))))
+                            log_and_update_album_task(f"Analyzing track: {track_name_full} ({idx}/{len(tracks_to_process)})", progress, current_track_name=track_name_full, model_type=model_type)
+
+                            _ah.upsert_artist_mappings_for_tracks([item], album_name=album_name)
+
+                            track_id_str = str(item['Id'])
+
+                            # Decide what THIS track still needs for THIS model
+                            needs_musicnn = (model_type == 'musicnn' and track_id_str not in existing_ids)
+                            needs_clap = track_id_str in missing_clap_ids_set
+                            needs_lyrics = LYRICS_ENABLED and track_id_str in missing_lyrics_ids_set
+
+                            # Download audio if needed
+                            path = None
+                            if needs_musicnn or needs_clap:
+                                path = download_track(TEMP_DIR, item)
+
+                            try:
+                                if not (needs_musicnn or needs_clap or needs_lyrics):
+                                    tracks_skipped_count += 1
+                                    logger.info(f"Skipping '{track_name_full}' - all analyses complete")
+                                    continue
+
+                                # Run comprehensive analysis (only the current model)
+                                analysis_result = analyze_track_comprehensive(
+                                    path or item['FilePath'],
+                                    mood_labels_list=mood_labels,
+                                    model_paths=model_paths if model_type == 'musicnn' else {'maest': model_paths['maest']},
+                                    models_to_run=[model_type],
+                                    onnx_sessions=onnx_sessions,
+                                    return_audio=(needs_lyrics and LYRICS_ENABLED)
+                                )
+
+                                if analysis_result is None or analysis_result.get(model_type) is None:
+                                    tracks_skipped_count += 1
+                                    continue
+
+                                # Extract results
+                                model_analysis = analysis_result[model_type]
+                                basic_features = analysis_result['basic']
+
+                                top_moods = dict(sorted(model_analysis['moods'].items(), key=lambda i: i[1], reverse=True)[:top_n_moods])
+                                model_embedding = model_analysis['embedding']
+
+                                # Compute CLAP and other_features if needed
+                                clap_emb = None
+                                other_features = ""
+                                if needs_clap:
+                                    clap_emb = run_clap_for_track(
+                                        path, track_name_full, needs_clap, is_clap_available(), PER_SONG_MODEL_RELOAD
+                                    )
+                                    other_features = compute_other_features_str(
+                                        clap_emb, needs_clap, clap_label_embeddings, item['Id'], OTHER_FEATURE_LABELS
+                                    )
+
+                                # Persist results
+                                if model_type == 'musicnn':
+                                    persist_musicnn_results(
+                                        item, model_analysis, top_moods, model_embedding,
+                                        other_features
+                                    )
+                                else:
+                                    persist_maest_results(
+                                        item, model_analysis, top_moods, model_embedding,
+                                        other_features
+                                    )
+
+                                # CLAP persistence (FIXED: pass clap_emb, not None)
+                                if needs_clap:
+                                    persist_clap_embedding(item['Id'], clap_emb, True)
+
+                                # Lyrics (once per track, independent of model)
+                                if needs_lyrics and LYRICS_ENABLED:
+                                    track_audio = analysis_result.get('audio')  # FIXED: Removed needs_musicnn guard
+                                    track_sr = 16000 if track_audio is not None else None
+                                    run_lyrics_for_track(
+                                        item, path, track_audio, track_sr,
+                                        track_name_full, needs_lyrics, LYRICS_ENABLED,
+                                        robust_load_audio_with_fallback,
+                                        top_moods=top_moods
+                                    )
+
+                                tracks_analyzed_count += 1
+                                session_recycler.increment()
+                                cleanup_cuda_memory(force=False)
+
+                            finally:
+                                if path and os.path.exists(path):
+                                    os.remove(path)
+
+                    finally:
+                        cleanup_fn(onnx_sessions)
+                        onnx_sessions = None
+
+                logger.info("Sequential mode complete")
+
+            # ─── DUAL MODE: both models per track ──────────────────────────────────────
+            else:
+                logger.info("Running in DUAL mode (both models per track)")
+
+                # Load both sessions upfront
+                onnx_sessions = {}
+                for model_type in models_enabled:
+                    if model_type == 'maest':
+                        onnx_sessions['maest'] = _ah.load_maest_session(MAEST_MODEL_PATH)
+                    else:
+                        onnx_sessions['musicnn'] = load_musicnn_sessions(model_paths)
+
                 try:
-                    for idx, item in enumerate(tracks_to_process, 1):
+                    for idx, item in enumerate(tracks, 1):
                         # Job cancellation check
                         if current_job:
                             task_info = get_task_info_from_db(current_task_id)
@@ -701,80 +847,82 @@ def analyze_album_task(album_id, album_name, top_n_moods, parent_task_id):
                                 return {"status": "REVOKED"}
 
                         track_name_full = f"{item['Name']} by {item.get('AlbumArtist', 'Unknown')}"
-                        progress = 10 + int(85 * ((idx) / float(len(tracks_to_process))))
-                        log_and_update_album_task(f"Analyzing track: {track_name_full} ({idx}/{len(tracks_to_process)})", progress, current_track_name=track_name_full, model_type=model_type)
+                        progress = 10 + int(85 * (idx / float(total_tracks_in_album)))
+                        log_and_update_album_task(f"Analyzing track: {track_name_full} ({idx}/{total_tracks_in_album})", progress, current_track_name=track_name_full)
 
-                        upsert_artist_mappings_for_tracks([item], album_name=album_name)
-                        
+                        _ah.upsert_artist_mappings_for_tracks([item], album_name=album_name)
+
                         track_id_str = str(item['Id'])
-                        
-                        # Decide what THIS track still needs for THIS model
-                        needs_musicnn = (model_type == 'musicnn' and track_id_str not in existing_ids)
+
+                        # Check which models this track still needs
+                        needed_models = [m for m in models_enabled if track_id_str not in existing_by_model[m]]
                         needs_clap = track_id_str in missing_clap_ids_set
                         needs_lyrics = LYRICS_ENABLED and track_id_str in missing_lyrics_ids_set
-                        
-                        # Download audio if needed
+
+                        if not needed_models and not needs_clap and not needs_lyrics:
+                            tracks_skipped_count += 1
+                            logger.info(f"Skipping '{track_name_full}' - already analyzed")
+                            continue
+
+                        # Download audio once
                         path = None
-                        if needs_musicnn or needs_clap:
+                        if needed_models or needs_clap:
                             path = download_track(TEMP_DIR, item)
-                        
+
                         try:
-                            if not (needs_musicnn or needs_clap or needs_lyrics):
-                                tracks_skipped_count += 1
-                                logger.info(f"Skipping '{track_name_full}' - all analyses complete")
-                                continue
-                            
-                            # Run comprehensive analysis (only the current model)
+                            # Run comprehensive analysis with all needed models
                             analysis_result = analyze_track_comprehensive(
                                 path or item['FilePath'],
-                                mood_labels_list=mood_labels,
-                                model_paths=model_paths if model_type == 'musicnn' else {'maest': model_paths['maest']},
-                                models_to_run=[model_type],
+                                mood_labels_list=None,  # Uses per-model labels internally
+                                model_paths=model_paths,
+                                models_to_run=needed_models,
                                 onnx_sessions=onnx_sessions,
                                 return_audio=(needs_lyrics and LYRICS_ENABLED)
                             )
-                            
-                            if analysis_result is None or analysis_result.get(model_type) is None:
+
+                            if analysis_result is None:
                                 tracks_skipped_count += 1
                                 continue
-                            
-                            # Extract results
-                            model_analysis = analysis_result[model_type]
+
                             basic_features = analysis_result['basic']
-                            
-                            top_moods = dict(sorted(model_analysis['moods'].items(), key=lambda i: i[1], reverse=True)[:top_n_moods])
-                            model_embedding = model_analysis['embedding']
-                            
-                            # Compute CLAP and other_features if needed
+
+                            # Persist each model's results
                             clap_emb = None
                             other_features = ""
-                            if needs_clap:
-                                clap_emb = run_clap_for_track(
-                                    path, track_name_full, needs_clap, is_clap_available(), PER_SONG_MODEL_RELOAD
-                                )
-                                other_features = compute_other_features_str(
-                                    clap_emb, needs_clap, clap_label_embeddings, item['Id'], OTHER_FEATURE_LABELS
-                                )
-                            
-                            # Persist results
-                            if model_type == 'musicnn':
-                                persist_musicnn_results(
-                                    item, model_analysis, top_moods, model_embedding,
-                                    other_features, energy=basic_features['energy']
-                                )
-                            else:
-                                persist_maest_results(
-                                    item, model_analysis, top_moods, model_embedding,
-                                    other_features, energy=basic_features['energy']
-                                )
-                            
-                            # CLAP persistence (FIXED: pass clap_emb, not None)
+
+                            for model_type in needed_models:
+                                if analysis_result.get(model_type):
+                                    model_analysis = analysis_result[model_type]
+                                    top_moods = dict(sorted(model_analysis['moods'].items(), key=lambda i: i[1], reverse=True)[:top_n_moods])
+
+                                    # Compute CLAP/other_features once (first model, usually MusicNN)
+                                    if clap_emb is None and needs_clap:
+                                        clap_emb = run_clap_for_track(
+                                            path, track_name_full, needs_clap, is_clap_available(), PER_SONG_MODEL_RELOAD
+                                        )
+                                        other_features = compute_other_features_str(
+                                            clap_emb, needs_clap, clap_label_embeddings, item['Id'], OTHER_FEATURE_LABELS
+                                        )
+
+                                    # Persist
+                                    if model_type == 'musicnn':
+                                        persist_musicnn_results(
+                                            item, model_analysis, top_moods, model_analysis['embedding'],
+                                            other_features
+                                        )
+                                    else:
+                                        persist_maest_results(
+                                            item, model_analysis, top_moods, model_analysis['embedding'],
+                                            other_features
+                                        )
+
+                            # CLAP persistence (FIXED: pass clap_emb)
                             if needs_clap:
                                 persist_clap_embedding(item['Id'], clap_emb, True)
-                            
-                            # Lyrics (once per track, independent of model)
+
+                            # Lyrics (once)
                             if needs_lyrics and LYRICS_ENABLED:
-                                track_audio = analysis_result.get('audio')  # FIXED: Removed needs_musicnn guard
+                                track_audio = analysis_result.get('audio')
                                 track_sr = 16000 if track_audio is not None else None
                                 run_lyrics_for_track(
                                     item, path, track_audio, track_sr,
@@ -782,181 +930,60 @@ def analyze_album_task(album_id, album_name, top_n_moods, parent_task_id):
                                     robust_load_audio_with_fallback,
                                     top_moods=top_moods
                                 )
-                            
+
                             tracks_analyzed_count += 1
-                            session_recycler.increment()
                             cleanup_cuda_memory(force=False)
-                            
+
                         finally:
                             if path and os.path.exists(path):
                                 os.remove(path)
-                
+
                 finally:
-                    cleanup_fn(onnx_sessions)
+                    # Cleanup all sessions
+                    if 'maest' in onnx_sessions:
+                        _ah.cleanup_maest_session(onnx_sessions['maest'], context="album end")
+                    if 'musicnn' in onnx_sessions:
+                        cleanup_musicnn_sessions(onnx_sessions['musicnn'], context="album end")
                     onnx_sessions = None
-            
-            logger.info("Sequential mode complete")
-        
-        # ─── DUAL MODE: both models per track ──────────────────────────────────────
-        else:
-            logger.info("Running in DUAL mode (both models per track)")
-            
-            # Load both sessions upfront
-            onnx_sessions = {}
-            for model_type in models_enabled:
-                if model_type == 'maest':
-                    onnx_sessions['maest'] = _ah.load_maest_session(MAEST_MODEL_PATH)
-                else:
-                    onnx_sessions['musicnn'] = load_musicnn_sessions(model_paths)
-            
-            try:
-                for idx, item in enumerate(tracks, 1):
-                    # Job cancellation check
-                    if current_job:
-                        task_info = get_task_info_from_db(current_task_id)
-                        parent_info = get_task_info_from_db(parent_task_id) if parent_task_id else None
-                        if (task_info and task_info.get('status') == 'REVOKED') or (parent_info and parent_info.get('status') in ['REVOKED', 'FAILURE']):
-                            log_and_update_album_task(f"Stopping album analysis for '{album_name}' due to parent/self revocation.", current_progress_val, task_state=TASK_STATUS_REVOKED)
-                            return {"status": "REVOKED"}
 
-                    track_name_full = f"{item['Name']} by {item.get('AlbumArtist', 'Unknown')}"
-                    progress = 10 + int(85 * (idx / float(total_tracks_in_album)))
-                    log_and_update_album_task(f"Analyzing track: {track_name_full} ({idx}/{total_tracks_in_album})", progress, current_track_name=track_name_full)
-
-                    upsert_artist_mappings_for_tracks([item], album_name=album_name)
-                    
-                    track_id_str = str(item['Id'])
-                    
-                    # Check which models this track still needs
-                    needed_models = [m for m in models_enabled if track_id_str not in existing_by_model[m]]
-                    needs_clap = track_id_str in missing_clap_ids_set
-                    needs_lyrics = LYRICS_ENABLED and track_id_str in missing_lyrics_ids_set
-                    
-                    if not needed_models and not needs_clap and not needs_lyrics:
-                        tracks_skipped_count += 1
-                        logger.info(f"Skipping '{track_name_full}' - already analyzed")
-                        continue
-                    
-                    # Download audio once
-                    path = None
-                    if needed_models or needs_clap:
-                        path = download_track(TEMP_DIR, item)
-                    
-                    try:
-                        # Run comprehensive analysis with all needed models
-                        analysis_result = analyze_track_comprehensive(
-                            path or item['FilePath'],
-                            mood_labels_list=None,  # Uses per-model labels internally
-                            model_paths=model_paths,
-                            models_to_run=needed_models,
-                            onnx_sessions=onnx_sessions,
-                            return_audio=(needs_lyrics and LYRICS_ENABLED)
-                        )
-                        
-                        if analysis_result is None:
-                            tracks_skipped_count += 1
-                            continue
-                        
-                        basic_features = analysis_result['basic']
-                        
-                        # Persist each model's results
-                        clap_emb = None
-                        other_features = ""
-                        
-                        for model_type in needed_models:
-                            if analysis_result.get(model_type):
-                                model_analysis = analysis_result[model_type]
-                                top_moods = dict(sorted(model_analysis['moods'].items(), key=lambda i: i[1], reverse=True)[:top_n_moods])
-                                
-                                # Compute CLAP/other_features once (first model, usually MusicNN)
-                                if clap_emb is None and needs_clap:
-                                    clap_emb = run_clap_for_track(
-                                        path, track_name_full, needs_clap, is_clap_available(), PER_SONG_MODEL_RELOAD
-                                    )
-                                    other_features = compute_other_features_str(
-                                        clap_emb, needs_clap, clap_label_embeddings, item['Id'], OTHER_FEATURE_LABELS
-                                    )
-                                
-                                # Persist
-                                if model_type == 'musicnn':
-                                    persist_musicnn_results(
-                                        item, model_analysis, top_moods, model_analysis['embedding'],
-                                        other_features, energy=basic_features['energy']
-                                    )
-                                else:
-                                    persist_maest_results(
-                                        item, model_analysis, top_moods, model_analysis['embedding'],
-                                        other_features, energy=basic_features['energy']
-                                    )
-                        
-                        # CLAP persistence (FIXED: pass clap_emb)
-                        if needs_clap:
-                            persist_clap_embedding(item['Id'], clap_emb, True)
-                        
-                        # Lyrics (once)
-                        if needs_lyrics and LYRICS_ENABLED:
-                            track_audio = analysis_result.get('audio')
-                            track_sr = 16000 if track_audio is not None else None
-                            run_lyrics_for_track(
-                                item, path, track_audio, track_sr,
-                                track_name_full, needs_lyrics, LYRICS_ENABLED,
-                                robust_load_audio_with_fallback,
-                                top_moods=top_moods
-                            )
-                        
-                        tracks_analyzed_count += 1
-                        cleanup_cuda_memory(force=False)
-                        
-                    finally:
-                        if path and os.path.exists(path):
-                            os.remove(path)
-            
-            finally:
-                # Cleanup all sessions
-                if 'maest' in onnx_sessions:
-                    _ah.cleanup_maest_session(onnx_sessions['maest'], context="album end")
-                if 'musicnn' in onnx_sessions:
-                    cleanup_musicnn_sessions(onnx_sessions['musicnn'], context="album end")
-                onnx_sessions = None
-        
-        # ─── FINAL CLEANUP ──────────────────────────────────────
-        cleanup_optional_models(context="album end")
-        logger.info("Performing final comprehensive cleanup after album analysis")
-        comprehensive_memory_cleanup(force_cuda=True, reset_onnx_pool=True)
-
-        summary = {"tracks_analyzed": tracks_analyzed_count, "tracks_skipped": tracks_skipped_count, "total_tracks_in_album": total_tracks_in_album}
-        log_and_update_album_task(f"Album '{album_name}' analysis complete.", 100, task_state=TASK_STATUS_SUCCESS, final_summary_details=summary)
-        return {"status": "SUCCESS", **summary}
-
-    except OperationalError as e:
-        logger.error(f"Database connection error during album analysis {album_id}: {e}. This job will be retried.", exc_info=True)
-        err = error_manager.record(ERR_DB_CONNECTION, str(e), exc=e)
-        log_and_update_album_task(f"Database connection failed for album '{album_name}'. Retrying...", current_progress_val, task_state=TASK_STATUS_FAILURE, error=err, final_summary_details={"error": str(e)})
-        raise
-    except Exception as e:
-        logger.critical(f"Album analysis {album_id} failed: {e}", exc_info=True)
-        err = error_manager.record(error_manager.classify(e, ERR_ALBUM_ANALYSIS_FAILED), str(e), exc=e)
-        log_and_update_album_task(f"Failed to analyze album '{album_name}': {e}", current_progress_val, task_state=TASK_STATUS_FAILURE, error=err, final_summary_details={"error": str(e)})
-        raise
-    finally:
-        # Ensure cleanup even on error
-        if onnx_sessions:
-            try:
-                for model_type in models_enabled:
-                    if model_type == 'maest' and 'maest' in onnx_sessions:
-                        _ah.cleanup_maest_session(onnx_sessions['maest'], context="finally")
-                    elif model_type == 'musicnn' and 'musicnn' in onnx_sessions:
-                        cleanup_musicnn_sessions(onnx_sessions['musicnn'], context="finally")
-            except Exception:
-                pass
-        
-        onnx_sessions = None
-        try:
+            # ─── FINAL CLEANUP ──────────────────────────────────────
+            cleanup_optional_models(context="album end")
+            logger.info("Performing final comprehensive cleanup after album analysis")
             comprehensive_memory_cleanup(force_cuda=True, reset_onnx_pool=True)
+
+            summary = {"tracks_analyzed": tracks_analyzed_count, "tracks_skipped": tracks_skipped_count, "total_tracks_in_album": total_tracks_in_album}
+            log_and_update_album_task(f"Album '{album_name}' analysis complete.", 100, task_state=TASK_STATUS_SUCCESS, final_summary_details=summary)
+            return {"status": "SUCCESS", **summary}
+
+        except OperationalError as e:
+            logger.error(f"Database connection error during album analysis {album_id}: {e}. This job will be retried.", exc_info=True)
+            err = error_manager.record(ERR_DB_CONNECTION, str(e), exc=e)
+            log_and_update_album_task(f"Database connection failed for album '{album_name}'. Retrying...", current_progress_val, task_state=TASK_STATUS_FAILURE, error=err, final_summary_details={"error": str(e)})
+            raise
         except Exception as e:
-            logger.warning(f"Error during final comprehensive cleanup: {e}")
-        cleanup_optional_models(context="finally")
-        _release_freed_ram_to_os()
+            logger.critical(f"Album analysis {album_id} failed: {e}", exc_info=True)
+            err = error_manager.record(error_manager.classify(e, ERR_ALBUM_ANALYSIS_FAILED), str(e), exc=e)
+            log_and_update_album_task(f"Failed to analyze album '{album_name}': {e}", current_progress_val, task_state=TASK_STATUS_FAILURE, error=err, final_summary_details={"error": str(e)})
+            raise
+        finally:
+            # Ensure cleanup even on error
+            if onnx_sessions:
+                try:
+                    for model_type in models_enabled:
+                        if model_type == 'maest' and 'maest' in onnx_sessions:
+                            _ah.cleanup_maest_session(onnx_sessions['maest'], context="finally")
+                        elif model_type == 'musicnn' and 'musicnn' in onnx_sessions:
+                            cleanup_musicnn_sessions(onnx_sessions['musicnn'], context="finally")
+                except Exception:
+                    pass
+
+            onnx_sessions = None
+            try:
+                comprehensive_memory_cleanup(force_cuda=True, reset_onnx_pool=True)
+            except Exception as e:
+                logger.warning(f"Error during final comprehensive cleanup: {e}")
+            cleanup_optional_models(context="finally")
+            _release_freed_ram_to_os()
 
 _AUTH_FAILURE_HINTS = (
     'wrong username', 'wrong password', 'unauthorized', 'unauthorised',

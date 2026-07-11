@@ -423,6 +423,7 @@ def refresh_dashboard_stats(app):
             db = get_db()
             cur = db.cursor(cursor_factory=DictCursor)
             try:
+                import config
                 # ─── NEW: Pass configured models ──────────────────────────────────────
                 models = getattr(config, 'ANALYSIS_MODELS_ENABLED', ['musicnn'])
                 content = _collect_content_metrics(cur, models=models)

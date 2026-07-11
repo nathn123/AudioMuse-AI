@@ -4,7 +4,7 @@ import uuid
 import logging
 
 # Import configuration from the main config.py
-from config import NUM_RECENT_ALBUMS, TOP_N_MOODS, TASK_STATUS_PENDING
+from config import NUM_RECENT_ALBUMS, TOP_N_MOODS, TASK_STATUS_PENDING, ANALYSIS_MODELS_ENABLED
 
 # RQ import
 from rq import Retry
@@ -60,6 +60,10 @@ def start_analysis_endpoint():
                 type: integer
                 description: Number of top moods to extract per track.
                 default: "Configured TOP_N_MOODS"
+              analysis_models:
+                type: string
+                description: analysis models to use
+                default: musicnn
     responses:
       202:
         description: Analysis task successfully enqueued.
@@ -93,6 +97,7 @@ def start_analysis_endpoint():
         }), 409
 
     data = request.json or {}
+    logger.info(f"data: {data}")
     num_recent_albums = int(data.get('num_recent_albums', NUM_RECENT_ALBUMS))
     top_n_moods = int(data.get('top_n_moods', TOP_N_MOODS))
     

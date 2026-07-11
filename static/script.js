@@ -138,6 +138,7 @@ function renderConfig(config) {
     // Analysis
     document.getElementById('config-num_recent_albums').value = config.num_recent_albums || 0;
     document.getElementById('config-top_n_moods').value = config.top_n_moods || 0;
+    document.getElementById('config-analysis_models').value = config.analysis_models || 'musicnn';
 
     // Clustering
     document.getElementById('config-top_n_playlists').value = config.top_n_playlists || 0;
@@ -383,6 +384,7 @@ async function startTask(taskType) {
     if (taskType === 'analysis') {
         payload.num_recent_albums = parseInt(document.getElementById('config-num_recent_albums').value);
         payload.top_n_moods = parseInt(document.getElementById('config-top_n_moods').value);
+        payload.analysis_models = document.getElementById('config-analysis_models').value;
     } else if (taskType === 'clustering') {
         playlistsSection.style.display = 'none';
         playlistsContainer.innerHTML = '';
