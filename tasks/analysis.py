@@ -571,7 +571,7 @@ def analyze_track_comprehensive(
         if musicnn_out and musicnn_out[0] is not None:
             result['musicnn'] = {
                 **basic_fields,
-                'embedding': musicnn_out[1].tolist() if musicnn_out[1] is not None else None,
+                'embedding': musicnn_out[1] if musicnn_out[1] is not None else None,
                 'moods': musicnn_out[0]['moods']
             }
     
@@ -584,7 +584,7 @@ def analyze_track_comprehensive(
         if maest_out and maest_out[0] is not None:
             result['maest'] = {
                 **basic_fields,
-                'embedding': maest_out[1].tolist() if maest_out[1] is not None else None,
+                'embedding': maest_out[1] if maest_out[1] is not None else None,
                 'moods': maest_out[0]['moods']
             }
     

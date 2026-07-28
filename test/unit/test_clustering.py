@@ -4,6 +4,7 @@ Tests cover clustering helper functions, parameter generation, post-processing,
 and duplicate filtering with minimal mocking.
 """
 import numpy as np
+import json
 from unittest.mock import Mock, patch
 from collections import defaultdict
 
@@ -458,6 +459,134 @@ class TestSanitizeForJson:
         
         assert result == obj
 
+    def test_exact_production_scenario(self):
+        """Exact reproduction of the clustering batch result that crashed in production"""
+        from sklearn.preprocessing import StandardScaler
+        from sklearn.decomposition import PCA
+        from sanitization import sanitize_for_json as _sanitize_for_json
+        
+        best_result_in_batch = {
+            'fitness_score': 15.97,
+            'parameters': {
+                '_hybrid_pca_models': {
+                    'musicnn': {
+                        'scaler': StandardScaler(),
+                        'pca': PCA(n_components=20)
+                    },
+                    'maest': {
+                        'scaler': StandardScaler(),
+                        'pca': PCA(n_components=40)
+                    }
+                }
+            },
+            'named_playlists': {
+                'Hip-Hop_Electronic_Pop_Medium_Danceable_Party': [
+                    ('Xfo1Wb7bE3ilZTA0xUjWHi', 'Party People', 'Vince Staples')
+                ]
+            }
+        }
+        
+        final_details = {
+            "best_score_in_batch": 15.97,
+            "iterations_completed_in_batch": 20,
+            "full_best_result_from_batch": best_result_in_batch,
+            "final_subset_track_ids": ["track_001", "track_002"]
+        }
+        
+        sanitized = _sanitize_for_json(final_details)
+        
+        # This is the exact line that was crashing in production
+        json.dumps(sanitized)
+
+    def test_sanitize_unfitted_standard_scaler(self):
+        from sklearn.preprocessing import StandardScaler
+        from sanitization import sanitize_for_json
+        result = sanitize_for_json(StandardScaler())
+        assert isinstance(result, dict)
+        assert result['_type'] == 'StandardScaler'
+
+    def test_sanitize_fitted_standard_scaler(self):
+        from sklearn.preprocessing import StandardScaler
+        from sanitization import sanitize_for_json
+        scaler = StandardScaler()
+        scaler.fit(np.array([[1.0, 2.0], [3.0, 4.0], [5.0, 6.0]]))
+        result = sanitize_for_json(scaler)
+        assert isinstance(result, dict)
+        assert result['_type'] == 'StandardScaler'
+        attrs = result['attributes']
+        assert 'mean_' in attrs
+        assert isinstance(attrs['mean_'], list)
+
+    def test_sanitize_pca(self):
+        from sklearn.preprocessing import StandardScaler
+        from sklearn.decomposition import PCA
+        from sanitization import sanitize_for_json
+        result = sanitize_for_json(PCA(n_components=20))
+        assert isinstance(result, dict)
+        assert result['_type'] == 'PCA'
+
+    def test_sanitize_kmeans(self):
+        from sklearn.preprocessing import StandardScaler
+        from sanitization import sanitize_for_json
+        from sklearn.cluster import KMeans
+        result = sanitize_for_json(KMeans(n_clusters=60, random_state=42))
+        assert isinstance(result, dict)
+        assert result['_type'] == 'KMeans'
+
+    def test_sanitize_nested_sklearn_objects(self):
+        from sklearn.preprocessing import StandardScaler
+        from sklearn.decomposition import PCA
+        from sanitization import sanitize_for_json
+        obj = {
+            'parameters': {
+                '_hybrid_pca_models': {
+                    'musicnn': {'scaler': StandardScaler(), 'pca': PCA(n_components=20)},
+                    'maest': {'scaler': StandardScaler(), 'pca': PCA(n_components=40)}
+                }
+            }
+        }
+        result = sanitize_for_json(obj)
+        musicnn = result['parameters']['_hybrid_pca_models']['musicnn']
+        maest = result['parameters']['_hybrid_pca_models']['maest']
+        assert isinstance(musicnn['scaler'], dict)
+        assert isinstance(musicnn['pca'], dict)
+        assert musicnn['scaler']['_type'] == 'StandardScaler'
+        assert musicnn['pca']['_type'] == 'PCA'
+
+    def test_sanitize_tuples(self):
+        from sklearn.preprocessing import StandardScaler
+        from sanitization import sanitize_for_json
+        obj = {'playlists': {'Cluster_1': [
+            ('track_id_1', 'Song Name', 'Artist Name'),
+        ]}}
+        result = sanitize_for_json(obj)
+        playlist = result['playlists']['Cluster_1']
+        assert isinstance(playlist[0], list)
+        assert playlist[0][0] == 'track_id_1'
+
+    def test_full_json_dumps_roundtrip(self):
+        from sklearn.preprocessing import StandardScaler
+        from sklearn.decomposition import PCA
+        from sanitization import sanitize_for_json
+        from sklearn.cluster import KMeans
+        obj = {
+            'fitness_score': 15.97,
+            'named_playlists': {'Hip-Hop': [('track_001', 'Collard Greens', 'ScHoolboy Q')]},
+            'parameters': {
+                '_hybrid_pca_models': {
+                    'musicnn': {'scaler': StandardScaler(), 'pca': PCA(n_components=20)},
+                    'maest': {'scaler': StandardScaler(), 'pca': PCA(n_components=40)}
+                },
+                'kmeans': KMeans(n_clusters=60, random_state=42),
+                'n_clusters': np.int64(87),
+                'explained_variance': np.array([0.45, 0.30, 0.15])
+            },
+        }
+        sanitized = sanitize_for_json(obj)
+        json_string = json.dumps(sanitized)
+        parsed = json.loads(json_string)
+        assert parsed['fitness_score'] == 15.97
+        assert parsed['parameters']['n_clusters'] == 87
 
 class TestGetVectorsFromDatabase:
     """Tests for vector retrieval from database"""

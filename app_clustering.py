@@ -19,6 +19,7 @@ from config import (
     OPENAI_MODEL_NAME, OPENAI_API_KEY, GEMINI_API_KEY, GEMINI_MODEL_NAME,
     TOP_N_PLAYLISTS, MISTRAL_API_KEY, MISTRAL_MODEL_NAME,
     TASK_STATUS_PENDING, TASK_STATUS_FAILURE,
+    CLUSTERING_MODE, HYBRID_WEIGHT_MUSICNN, HYBRID_WEIGHT_MAEST,
 )
 
 # RQ import
@@ -315,6 +316,9 @@ def start_clustering_endpoint():
             "mistral_model_name_param": data.get('mistral_model_name', MISTRAL_MODEL_NAME),
             "top_n_moods_for_clustering_param": int(data.get('top_n_moods', TOP_N_MOODS)),
             "enable_clustering_embeddings_param": data.get('enable_clustering_embeddings', ENABLE_CLUSTERING_EMBEDDINGS),
+            "clustering_mode_param": data.get('clustering_mode', CLUSTERING_MODE),
+            "hybrid_weight_musicnn_param": float(data.get('hybrid_weight_musicnn', HYBRID_WEIGHT_MUSICNN)),
+            "hybrid_weight_maest_param": float(data.get('hybrid_weight_maest', HYBRID_WEIGHT_MAEST)),
     }
 
     # Clean up details of previously successful or stale tasks before starting a new one

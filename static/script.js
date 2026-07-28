@@ -27,6 +27,15 @@ const openaiConfigGroup = document.getElementById('openai-config-group');
 const geminiConfigGroup = document.getElementById('gemini-config-group');
 const mistralConfigGroup = document.getElementById('mistral-config-group');
 
+// Clustering Mode controls
+const clusteringModeSelect = document.getElementById('config-clustering_mode');
+const hybridWeightsDiv = document.getElementById('hybrid-weights');
+const dualConsensusThresholdDiv = document.getElementById('dual-consensus-threshold');
+const hybridWeightMusicnnSlider = document.getElementById('config-hybrid_weight_musicnn');
+const hybridWeightMaestSlider = document.getElementById('config-hybrid_weight_maest');
+const moodWeightLabel = document.getElementById('mood-weight-label');
+const genreWeightLabel = document.getElementById('genre-weight-label');
+
 // Task Buttons
 const startAnalysisBtn = document.getElementById('start-analysis-btn');
 const startClusteringBtn = document.getElementById('start-clustering-btn');
@@ -126,6 +135,7 @@ async function fetchConfig() {
         // Call switchView here to ensure the view is set correctly *before* showing the content
         switchView('basic'); 
         toggleAiConfig();
+        toggleClusteringMode();
     } catch (error) {
         console.error('Error fetching config:', error);
         showMessageBox('Error', 'Failed to load configuration. Please check the backend server.');
@@ -160,6 +170,21 @@ function renderConfig(config) {
     document.getElementById('config-score_weight_other_feature_diversity').value = config.score_weight_other_feature_diversity || 0;
     document.getElementById('config-score_weight_other_feature_purity').value = config.score_weight_other_feature_purity || 0;
     document.getElementById('config-enable_clustering_embeddings').checked = config.enable_clustering_embeddings;
+
+    // Clustering Mode
+    if (clusteringModeSelect && config.clustering_mode) {
+        clusteringModeSelect.value = config.clustering_mode;
+    }
+    if (hybridWeightMusicnnSlider && config.hybrid_weight_musicnn !== undefined) {
+        const mnVal = Math.round(parseFloat(config.hybrid_weight_musicnn) * 100);
+        hybridWeightMusicnnSlider.value = mnVal;
+        if (moodWeightLabel) moodWeightLabel.textContent = `${mnVal}%`;
+    }
+    if (hybridWeightMaestSlider && config.hybrid_weight_maest !== undefined) {
+        const maVal = Math.round(parseFloat(config.hybrid_weight_maest) * 100);
+        hybridWeightMaestSlider.value = maVal;
+        if (genreWeightLabel) genreWeightLabel.textContent = `${maVal}%`;
+    }
 
     // Algorithm Specific
     document.getElementById('config-dbscan_eps_min').value = config.dbscan_eps_min || 0;
@@ -208,6 +233,38 @@ function toggleClusteringParams() {
         } else if (selectedAlgorithm === 'kmeans' && kmeansParamsBasic) { 
             kmeansParamsBasic.classList.remove('hidden'); // Show K-Means params if K-Means is selected
         }
+    }
+}
+
+/**
+ * Shows/hides the hybrid weight sliders and dual consensus threshold
+ * based on the selected clustering mode.
+ */
+function toggleClusteringMode() {
+    if (!clusteringModeSelect) return;
+    const mode = clusteringModeSelect.value;
+
+    // Hide both conditional sections first
+    if (hybridWeightsDiv) hybridWeightsDiv.classList.add('hidden');
+    if (dualConsensusThresholdDiv) dualConsensusThresholdDiv.classList.add('hidden');
+
+    if (mode === 'hybrid_blend') {
+        if (hybridWeightsDiv) hybridWeightsDiv.classList.remove('hidden');
+    } else if (mode === 'dual_consensus') {
+        if (dualConsensusThresholdDiv) dualConsensusThresholdDiv.classList.remove('hidden');
+    }
+    // For 'musicnn' and 'maest' (single-model modes), neither section is shown.
+}
+
+/**
+ * Updates the weight labels when sliders change, keeping them in sync.
+ * @param {string} which Which slider changed ('musicnn' or 'maest').
+ */
+function updateWeightLabel(which) {
+    if (which === 'musicnn' && moodWeightLabel && hybridWeightMusicnnSlider) {
+        moodWeightLabel.textContent = `${hybridWeightMusicnnSlider.value}%`;
+    } else if (which === 'maest' && genreWeightLabel && hybridWeightMaestSlider) {
+        genreWeightLabel.textContent = `${hybridWeightMaestSlider.value}%`;
     }
 }
 
@@ -424,7 +481,10 @@ async function startTask(taskType) {
             openai_model_name: document.getElementById('config-openai_model_name').value,
             gemini_model_name: document.getElementById('config-gemini_model_name').value,
             mistral_model_name: document.getElementById('config-mistral_model_name').value,
-            enable_clustering_embeddings: document.getElementById('config-enable_clustering_embeddings').checked
+            enable_clustering_embeddings: document.getElementById('config-enable_clustering_embeddings').checked,
+            clustering_mode: clusteringModeSelect ? clusteringModeSelect.value : 'hybrid_blend',
+            hybrid_weight_musicnn: hybridWeightMusicnnSlider ? parseFloat(hybridWeightMusicnnSlider.value) / 100.0 : 0.3,
+            hybrid_weight_maest: hybridWeightMaestSlider ? parseFloat(hybridWeightMaestSlider.value) / 100.0 : 0.7
         });
     }
 
@@ -566,6 +626,9 @@ basicViewBtn.addEventListener('click', () => switchView('basic'));
 advancedViewBtn.addEventListener('click', () => switchView('advanced'));
 clusterAlgorithmSelect.addEventListener('change', toggleClusteringParams);
 aiModelProviderSelect.addEventListener('change', toggleAiConfig);
+clusteringModeSelect.addEventListener('change', toggleClusteringMode);
+hybridWeightMusicnnSlider.addEventListener('input', () => updateWeightLabel('musicnn'));
+hybridWeightMaestSlider.addEventListener('input', () => updateWeightLabel('maest'));
 startAnalysisBtn.addEventListener('click', () => startTask('analysis'));
 startClusteringBtn.addEventListener('click', () => startTask('clustering'));
 fetchPlaylistsBtn.addEventListener('click', fetchPlaylists);

@@ -386,7 +386,7 @@ def get_score_data_by_ids(item_ids_list):
     conn = get_db()
     cur = conn.cursor(cursor_factory=DictCursor)
     query = """
-        SELECT s.item_id, s.title, s.author, s.album, s.album_artist, s.tempo, s.key, s.scale, s.mood_vector, s.energy, s.other_features, s.year, s.rating, s.file_path
+        SELECT s.item_id, s.title, s.author, s.album, s.album_artist, s.tempo, s.key, s.scale, s.mood_vector, s.maest_mood_vector, s.energy, s.other_features, s.year, s.rating, s.file_path
         FROM score s
         WHERE s.item_id IN %s
     """
@@ -481,9 +481,10 @@ def get_tracks_by_ids(item_ids_list):
     item_ids_str = [str(item_id) for item_id in item_ids_list]
 
     query = """
-        SELECT s.item_id, s.title, s.author, s.album, s.album_artist, s.tempo, s.key, s.scale, s.mood_vector, s.energy, s.other_features, s.year, s.rating, s.file_path, e.embedding
+        SELECT s.item_id, s.title, s.author, s.album, s.album_artist, s.tempo, s.key, s.scale, s.mood_vector, s.maest_mood_vector, s.energy, s.other_features, s.year, s.rating, s.file_path, e.embedding, me.embedding AS maest_embedding
         FROM score s
         LEFT JOIN embedding e ON s.item_id = e.item_id
+        LEFT JOIN maest_embedding me ON s.item_id = me.item_id
         WHERE s.item_id IN %s
     """
     cur.execute(query, (tuple(item_ids_str),))
@@ -498,6 +499,10 @@ def get_tracks_by_ids(item_ids_list):
             row_dict['embedding_vector'] = np.frombuffer(row_dict['embedding'], dtype=np.float32)
         else:
             row_dict['embedding_vector'] = np.array([])
+        if row_dict.get('maest_embedding'):
+            row_dict['maest_embedding_vector'] = np.frombuffer(row_dict['maest_embedding'], dtype=np.float32)
+        else:
+            row_dict['maest_embedding_vector'] = np.array([])
         processed_rows.append(row_dict)
 
     return processed_rows
@@ -683,6 +688,10 @@ def save_track_analysis_and_embedding(item_id, title, author, tempo, key, scale,
                 INSERT INTO {embedding_table} (item_id, embedding) VALUES (%s, %s)
                 ON CONFLICT (item_id) DO UPDATE SET embedding = EXCLUDED.embedding
             """, (item_id, psycopg2.Binary(embedding_blob)))
+        else:
+            logger.warning("Skipping embedding save for %s: type=%s, size=%s",
+                        item_id, type(embedding_vector).__name__,
+                        getattr(embedding_vector, 'size', 'N/A'))
 
         conn.commit()
     except Exception:

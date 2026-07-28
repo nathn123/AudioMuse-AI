@@ -47,6 +47,7 @@ services:
       - ../../tasks:/app/tasks            # ← Only tasks/ (your analysis code)
       - ../../config.py:/app/config.py    # ← config.py if you edit it
       - ../../database.py:/app/database.py
+      - ../../sanitization.py:/app/sanitization.py
       - ../../app_analysis.py:/app/app_analysis.py
       - ../../app_helper.py:/app/app_helper.py
       - ../../app_dashboard.py:/app/app_dashboard.py
@@ -93,6 +94,7 @@ services:
     - ../../tasks:/app/tasks            # ← Only tasks/ (your analysis code)
     - ../../config.py:/app/config.py
     - ../../database.py:/app/database.py
+    - ../../sanitization.py:/app/sanitization.py
     - ../../app_helper.py:/app/app_helper.py
     - ../../error:/app/error
     # Worker doesn't need static/templates        # Mount source code for hot-reload

@@ -247,6 +247,49 @@
                         </label>
                         <input type="checkbox" id="config-enable_clustering_embeddings" style="width: auto; margin-left: 5px;">
                     </div>
+                    <div>
+                        <label for="config-clustering_mode" class="label-with-tooltip">
+                            Clustering Mode:
+                            <span class="info-tooltip" tabindex="0">
+                                <span class="info-icon"></span>
+                                <span class="tooltip-text">Select which model to use for clustering: MusiCNN (mood-based), MAEST (genre-based), Hybrid Blend (weighted combination), or Dual Consensus (best quality through consensus).</span>
+                            </span>
+                        </label>
+                        <select id="config-clustering_mode">
+                            <option value="musicnn">MusiCNN — mood-based</option>
+                            <option value="maest">MAEST — genre-based</option>
+                            <option value="hybrid_blend" selected>Hybrid Blend — weighted</option>
+                            <option value="dual_consensus">Dual Consensus — best quality</option>
+                        </select>
+                    </div>
+                </div>
+
+                <!-- Hybrid Blend Weight Sliders -->
+                <div id="hybrid-weights" class="param-group">
+                    <h4>Hybrid Blend Weights:</h4>
+                    <div>
+                        <label for="config-hybrid_weight_musicnn">Mood influence: <span id="mood-weight-label">30%</span></label>
+                        <input type="range" id="config-hybrid_weight_musicnn" class="weight-slider" min="0" max="100" value="30">
+                    </div>
+                    <div>
+                        <label for="config-hybrid_weight_maest">Genre influence: <span id="genre-weight-label">70%</span></label>
+                        <input type="range" id="config-hybrid_weight_maest" class="weight-slider" min="0" max="100" value="70">
+                    </div>
+                </div>
+
+                <!-- Dual Consensus Threshold -->
+                <div id="dual-consensus-threshold" class="param-group hidden">
+                    <h4>Dual Consensus Settings:</h4>
+                    <div>
+                        <label for="config-dual_nmi_threshold" class="label-with-tooltip">
+                            NMI Agreement Threshold:
+                            <span class="info-tooltip" tabindex="0">
+                                <span class="info-icon"></span>
+                                <span class="tooltip-text">Minimum Normalized Mutual Information score required for MusiCNN and MAEST results to agree. Higher values require stronger consensus (0.0-1.0). Default: 0.3</span>
+                            </span>
+                        </label>
+                        <input type="number" id="config-dual_nmi_threshold" step="0.05" min="0" max="1" value="0.3">
+                    </div>
                 </div>
 
                 <!-- K-Means specific parameters (for Basic and Advanced K-Means view) -->

@@ -128,6 +128,22 @@ MIN_PLAYLIST_SIZE_FOR_TOP_N = int(os.environ.get("MIN_PLAYLIST_SIZE_FOR_TOP_N", 
 CLUSTER_ALGORITHM = os.environ.get("CLUSTER_ALGORITHM", "kmeans") # accepted dbscan, kmeans, gmm, or spectral
 AI_MODEL_PROVIDER = os.environ.get("AI_MODEL_PROVIDER", "NONE").upper() # Accepted: OLLAMA, OPENAI, GEMINI, MISTRAL, NONE
 ENABLE_CLUSTERING_EMBEDDINGS = os.environ.get("ENABLE_CLUSTERING_EMBEDDINGS", "True").lower() == "true"
+CLUSTERING_MODE = os.environ.get("CLUSTERING_MODE", "hybrid_blend") # accepted musicnn, maest, hybrid_blend, dual_consensus
+
+# --- Hybrid Blend (2b) PCA dims ---
+HYBRID_PCA_MUSICNN = int(os.environ.get("HYBRID_PCA_MUSICNN", "20"))
+HYBRID_PCA_MAEST   = int(os.environ.get("HYBRID_PCA_MAEST", "40"))
+
+# --- Hybrid Blend (2b) Weights ---
+# 0.0 = pure MAEST, 1.0 = pure MusiCNN. Sum doesn't need 1.0 — applied as scalars.
+HYBRID_WEIGHT_MUSICNN = float(os.environ.get("HYBRID_WEIGHT_MUSICNN", "0.3"))
+HYBRID_WEIGHT_MAEST   = float(os.environ.get("HYBRID_WEIGHT_MAEST", "0.7"))
+
+# --- Dual Consensus ---
+DUAL_NMI_THRESHOLD = float(os.environ.get("DUAL_NMI_THRESHOLD", "0.3"))
+
+# --- Auto-Calibration ---
+AUTO_CALIBRATE_LN_STATS = os.environ.get("AUTO_CALIBRATE_LN_STATS", "true").lower() == "true"
 
 # --- GPU Acceleration for Clustering (Optional, requires NVIDIA GPU and RAPIDS cuML) ---
 USE_GPU_CLUSTERING = os.environ.get("USE_GPU_CLUSTERING", "False").lower() == "true"
@@ -269,6 +285,32 @@ LN_OTHER_FEATURES_PURITY_STATS = {
     "sd": float(os.environ.get("LN_OTHER_FEAT_PUR_SD", "0.07"))     # Updated value
 }
 
+LN_MAEST_GENRE_DIVERSITY_STATS = {
+    "min": float(os.environ.get("LN_MAEST_GENRE_DIVERSITY_MIN", "8.67")),   # Updated value
+    "max": float(os.environ.get("LN_MAEST_GENRE_DIVERSITY_MAX", "8.95")),   # Updated value
+    "mean": float(os.environ.get("LN_MAEST_GENRE_DIVERSITY_MEAN", "8.84")),  # Updated value
+    "sd": float(os.environ.get("LN_MAEST_GENRE_DIVERSITY_SD", "0.07"))     # Updated value
+}
+LN_MAEST_GENRE_PURITY_STATS = {
+    "min": float(os.environ.get("LN_MAEST_GENRE_PURITY_MIN", "8.67")),   # Updated value
+    "max": float(os.environ.get("LN_MAEST_GENRE_PURITY_MAX", "8.95")),   # Updated value
+    "mean": float(os.environ.get("LN_MAEST_GENRE_PURITY_MEAN", "8.84")),  # Updated value
+    "sd": float(os.environ.get("LN_MAEST_GENRE_PURITY_SD", "0.07"))     # Updated value
+}
+LN_HYBRID_MOOD_DIVERSITY_STATS = {
+    "min": float(os.environ.get("LN_HYBRID_MOOD_DIVERSITY_MIN", "8.67")),   # Updated value
+    "max": float(os.environ.get("LN_HYBRID_MOOD_DIVERSITY_MAX", "8.95")),   # Updated value
+    "mean": float(os.environ.get("LN_HYBRID_MOOD_DIVERSITY_MEAN", "8.84")),  # Updated value
+    "sd": float(os.environ.get("LN_HYBRID_MOOD_DIVERSITY_SD", "0.07"))     # Updated value
+}
+LN_HYBRID_MOOD_PURITY_STATS = {
+    "min": float(os.environ.get("LN_HYBRID_MOOD_PURITY_MIN", "8.67")),   # Updated value
+    "max": float(os.environ.get("LN_HYBRID_MOOD_PURITY_MAX", "8.95")),   # Updated value
+    "mean": float(os.environ.get("LN_HYBRID_MOOD_PURITY_MEAN", "8.84")),  # Updated value
+    "sd": float(os.environ.get("LN_HYBRID_MOOD_PURITY_SD", "0.07"))     # Updated value
+}
+
+
 # Threshold for considering an "other feature" predominant in a playlist for purity calculation
 OTHER_FEATURE_PREDOMINANCE_THRESHOLD_FOR_PURITY = float(os.environ.get("OTHER_FEATURE_PREDOMINANCE_THRESHOLD_FOR_PURITY", "0.3"))
 
@@ -344,6 +386,10 @@ MOOD_LABELS = [
     'female vocalist', 'guitar', 'Hip-Hop', '70s', 'party', 'country', 'easy listening', 'sexy', 'catchy', 'funk', 'electro',
     'heavy metal', 'Progressive rock', '60s', 'rnb', 'indie pop', 'sad', 'House', 'happy'
 ]
+
+
+# --- Label sets ---
+MUSICNN_MOOD_LABELS = MOOD_LABELS
 
 TOP_N_MOODS = int(os.environ.get("TOP_N_MOODS", "5"))  # Number of top moods to consider (configurable via env)
 EMBEDDING_MODEL_PATH = os.environ.get("EMBEDDING_MODEL_PATH", "/app/model/musicnn_embedding.onnx")

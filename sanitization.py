@@ -91,21 +91,28 @@ def sanitize_json_for_db(value):
 
 
 def sanitize_for_json(obj):
-    """Recursively convert numpy arrays and numpy numeric types to native Python
-    types so the object is JSON serializable.
-    """
+    """Recursively convert non-JSON-serializable types to native Python structures."""
     if isinstance(obj, dict):
         return {k: sanitize_for_json(v) for k, v in obj.items()}
-    elif isinstance(obj, list):
+    elif isinstance(obj, (list, tuple)):
         return [sanitize_for_json(elem) for elem in obj]
     elif isinstance(obj, np.ndarray):
         return obj.tolist()
-    # Handle numpy numeric types which are not JSON serializable by default
-    elif isinstance(obj, (np.int_, np.intc, np.intp, np.int8, np.int16, np.int32, np.int64, np.uint8, np.uint16, np.uint32, np.uint64)):
+    elif isinstance(obj, (np.int_, np.intc, np.intp, np.int8, np.int16, np.int32, np.int64,
+                          np.uint8, np.uint16, np.uint32, np.uint64)):
         return int(obj)
     elif isinstance(obj, np.floating):
         return float(obj)
     elif isinstance(obj, np.bool_):
         return bool(obj)
-    else:
+    elif isinstance(obj, (str, int, float, bool, type(None))):
         return obj
+    elif hasattr(obj, '__dict__'):
+        # Extract instance attributes from arbitrary objects (sklearn estimators, etc.)
+        return {
+            '_type': obj.__class__.__name__,
+            '_module': obj.__class__.__module__,
+            'attributes': sanitize_for_json(vars(obj))
+        }
+    else:
+        return str(obj)

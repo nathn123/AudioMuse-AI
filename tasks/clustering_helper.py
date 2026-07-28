@@ -29,14 +29,16 @@ except ImportError:
 from rq.job import Job, JobStatus
 from rq.exceptions import NoSuchJobError
 
-from config import (STRATIFIED_GENRES, OTHER_FEATURE_LABELS, MOOD_LABELS, MAX_DISTANCE,
-                    MAX_SONGS_PER_ARTIST, GMM_COVARIANCE_TYPE, SPECTRAL_N_NEIGHBORS,
+from config import (STRATIFIED_GENRES, OTHER_FEATURE_LABELS, MOOD_LABELS, MAEST_MOOD_LABELS, MUSICNN_MOOD_LABELS,
+                    MAX_DISTANCE, MAX_SONGS_PER_ARTIST, GMM_COVARIANCE_TYPE, SPECTRAL_N_NEIGHBORS,
                     TOP_K_MOODS_FOR_PURITY_CALCULATION, LN_MOOD_DIVERSITY_STATS,
                     LN_MOOD_PURITY_STATS, LN_MOOD_DIVERSITY_EMBEDING_STATS,
                     LN_MOOD_PURITY_EMBEDING_STATS, LN_OTHER_FEATURES_DIVERSITY_STATS,
                     LN_OTHER_FEATURES_PURITY_STATS,
                     OTHER_FEATURE_PREDOMINANCE_THRESHOLD_FOR_PURITY,
-                    USE_GPU_CLUSTERING, TASK_STATUS_SUCCESS)
+                    USE_GPU_CLUSTERING, TASK_STATUS_SUCCESS,
+                    HYBRID_PCA_MUSICNN, HYBRID_PCA_MAEST,
+                    HYBRID_WEIGHT_MUSICNN, HYBRID_WEIGHT_MAEST)
 from .commons import score_vector
 
 # Import AI naming for playlist helpers
@@ -111,7 +113,7 @@ def _perform_single_clustering_iteration(
     spectral_params_ranges, pca_params_ranges, active_mood_labels,
     max_songs_per_cluster, log_prefix,
     elite_solutions_params_list, exploitation_probability, mutation_config,
-    score_weights, enable_clustering_embeddings):
+    score_weights, enable_clustering_embeddings, clustering_mode="musicnn"):
     """
     Orchestrates a single evolutionary run of the clustering process.
     This function is now a high-level coordinator.
@@ -124,19 +126,110 @@ def _perform_single_clustering_iteration(
             logger.warning(f"{log_prefix} Iteration {run_idx}: Received empty item ID subset. Skipping.")
             return {"fitness_score": -1.0}
 
-        # 1. Prepare Data: Fetch full track data and create feature vectors
+        # 1. Prepare Data: Fetch full track data and create feature vectors based on clustering_mode
+        valid_tracks = None
+        X_feat_musicnn = None
+        X_feat_maest = None
+        X_feat_orig = None
+        X_embed_raw = None
+        data_to_cluster = None
+        scaler = None
+        use_hybrid_internal_pca = False
+        
         with app.app_context():
-            valid_tracks, X_feat_orig, X_embed_raw = _prepare_iteration_data(
-                item_ids_for_subset, active_mood_labels, enable_clustering_embeddings, log_prefix, run_idx
-            )
-        if valid_tracks is None:
-             return {"fitness_score": -1.0} # Error already logged in helper
-
-        # 2. Prepare data for clustering (embeddings or features) and scale it
-        data_to_cluster, scaler = _prepare_and_scale_data(X_feat_orig, X_embed_raw, enable_clustering_embeddings)
+            # Determine which mood labels to use based on clustering mode
+            if clustering_mode == "maest" or clustering_mode == "hybrid_blend":
+                # For maest or hybrid_blend, we need both feature sets
+                if clustering_mode == "maest":
+                    # Maest-only: use MAEST labels for naming/scoring
+                    iteration_mood_labels = MAEST_MOOD_LABELS
+                else:
+                    # Hybrid: use MUSICNN labels for naming/scoring (moods)
+                    iteration_mood_labels = MUSICNN_MOOD_LABELS
+                
+                valid_tracks, X_feat_musicnn, X_feat_maest = _prepare_iteration_data_both(
+                    item_ids_for_subset, MUSICNN_MOOD_LABELS, MAEST_MOOD_LABELS, log_prefix, run_idx
+                )
+                if valid_tracks is None:
+                    return {"fitness_score": -1.0}
+                
+                # Build data_to_cluster based on mode
+                if clustering_mode == "maest":
+                    # Use MAEST features only
+                    if X_feat_maest is None or X_feat_maest.shape[0] == 0:
+                        logger.error(f"{log_prefix} Iteration {run_idx}: No MAEST features available.")
+                        return {"fitness_score": -1.0}
+                    scaler = StandardScaler()
+                    data_to_cluster = scaler.fit_transform(X_feat_maest)
+                    # Set X_feat_orig to X_feat_maest for scoring consistency
+                    X_feat_orig = X_feat_maest
+                    # Update active_mood_labels for naming/scoring
+                    active_mood_labels = MAEST_MOOD_LABELS
+                else:  # hybrid_blend
+                    # Hybrid blend: PCA-reduce both, weight-scale, concatenate
+                    # NOTE: PCA components will be determined AFTER parameter generation
+                    # We store placeholders here and apply PCA after params are generated
+                    if X_feat_musicnn is None or X_feat_musicnn.shape[0] == 0:
+                        logger.error(f"{log_prefix} Iteration {run_idx}: No MusicNN features available for hybrid blend.")
+                        return {"fitness_score": -1.0}
+                    if X_feat_maest is None or X_feat_maest.shape[0] == 0:
+                        logger.error(f"{log_prefix} Iteration {run_idx}: No MAEST features available for hybrid blend.")
+                        return {"fitness_score": -1.0}
+                    
+                    # For now, store raw data; PCA will be applied after param generation
+                    data_to_cluster = (X_feat_musicnn, X_feat_maest)  # Tuple marker for hybrid processing later
+                    use_hybrid_internal_pca = True
+                    # Set X_feat_orig to X_feat_musicnn for naming consistency (musicnn has mood labels)
+                    X_feat_orig = X_feat_musicnn
+                    # Update active_mood_labels for naming
+                    active_mood_labels = MUSICNN_MOOD_LABELS
+            else:
+                # Default musicnn mode: use existing logic
+                if enable_clustering_embeddings:
+                    # Embedding-based clustering
+                    valid_tracks, X_feat_orig, X_embed_raw = _prepare_iteration_data(
+                        item_ids_for_subset, active_mood_labels, True, log_prefix, run_idx
+                    )
+                    if valid_tracks is None:
+                        return {"fitness_score": -1.0}
+                    data_to_cluster, scaler = _prepare_and_scale_data(X_feat_orig, X_embed_raw, True)
+                else:
+                    # Traditional feature-based clustering
+                    valid_tracks, X_feat_orig, X_embed_raw = _prepare_iteration_data(
+                        item_ids_for_subset, active_mood_labels, False, log_prefix, run_idx
+                    )
+                    if valid_tracks is None:
+                        return {"fitness_score": -1.0}
+                    data_to_cluster, scaler = _prepare_and_scale_data(X_feat_orig, X_embed_raw, False)
+        
         if data_to_cluster is None:
             logger.error(f"{log_prefix} Iteration {run_idx}: Data for clustering is empty after prep. Cannot proceed.")
             return {"fitness_score": -1.0}
+
+        # 2b. Handle hybrid blend PCA BEFORE parameter generation (uses fixed config values)
+        # This is necessary because _generate_evolutionary_parameters needs data.shape attributes
+        hybrid_pca_models = None
+        if use_hybrid_internal_pca and isinstance(data_to_cluster, tuple):
+            X_musicnn_raw, X_maest_raw = data_to_cluster
+            
+            # Use fixed HYBRID_PCA_* values (evolutionary PCA is skipped for hybrid mode)
+            m_scaler, m_pca, X_musicnn_pca = _pca_reduce(X_musicnn_raw, HYBRID_PCA_MUSICNN, log_prefix, "MusicNN")
+            a_scaler, a_pca, X_maest_pca = _pca_reduce(X_maest_raw, HYBRID_PCA_MAEST, log_prefix, "MAEST")
+            
+            if X_musicnn_pca is None or X_maest_pca is None:
+                logger.error(f"{log_prefix} Iteration {run_idx}: PCA reduction failed for hybrid blend.")
+                return {"fitness_score": -1.0}
+            
+            # Weight-scale and concatenate
+            X_musicnn_weighted = X_musicnn_pca * HYBRID_WEIGHT_MUSICNN
+            X_maest_weighted = X_maest_pca * HYBRID_WEIGHT_MAEST
+            data_to_cluster = np.hstack([X_musicnn_weighted, X_maest_weighted])
+            
+            # Store PCA models for later inversion (HybridScaler in Task 2b.6)
+            hybrid_pca_models = {
+                'musicnn': {'scaler': m_scaler, 'pca': m_pca, 'output_dims': X_musicnn_pca.shape[1]},
+                'maest': {'scaler': a_scaler, 'pca': a_pca, 'output_dims': X_maest_pca.shape[1]}
+            }
 
         # 3. Generate Parameters: Use evolutionary approach (mutate elite or explore)
         params = _generate_evolutionary_parameters(
@@ -146,7 +239,13 @@ def _perform_single_clustering_iteration(
             log_prefix, run_idx
         )
 
-        # 4. Apply PCA if specified by the generated parameters
+        # Attach hybrid PCA models to params and disable regular PCA for hybrid mode
+        if hybrid_pca_models:
+            params['_hybrid_pca_models'] = hybrid_pca_models
+            params['_hybrid_weights'] = {'musicnn': HYBRID_WEIGHT_MUSICNN, 'maest': HYBRID_WEIGHT_MAEST}
+            params['pca_config']['enabled'] = False
+        
+        # 4. Apply PCA if specified by the generated parameters (skipped for hybrid_blend)
         pca_model, data_after_pca = None, data_to_cluster
         if params['pca_config']['enabled']:
             # Use GPU PCA if available and enabled
@@ -201,6 +300,125 @@ def _prepare_iteration_data(item_ids, active_mood_labels, use_embeddings, log_pr
         logger.error(f"{log_prefix} Iteration {run_idx}: No valid tracks could be processed.")
         return None, None, None
     return valid_tracks, np.array(X_feat_orig_list), np.array(X_embed_raw_list) if use_embeddings else None
+
+def _prepare_iteration_data_both(item_ids, musicnn_labels, maest_labels, log_prefix, run_idx):
+    """Returns (valid_tracks, X_feat_musicnn, X_feat_maest).
+    
+    Both feature vectors from the same track subset.
+    Either can be None if that model's data column is empty for all tracks.
+    """
+    rows = get_score_data_by_ids(item_ids)  # Now includes maest_mood_vector (Task 3)
+    valid_tracks, X_mn_list, X_ma_list = [], [], []
+    for row_data in (dict(r) for r in rows if r):
+        try:
+            feat_mn = score_vector(row_data, musicnn_labels, OTHER_FEATURE_LABELS, mood_column='mood_vector')
+            feat_ma = score_vector(row_data, maest_labels, OTHER_FEATURE_LABELS, mood_column='maest_mood_vector')
+            valid_tracks.append(row_data)
+            X_mn_list.append(feat_mn)
+            X_ma_list.append(feat_ma)
+        except (json.JSONDecodeError, TypeError):
+            continue
+    X_mn = np.array(X_mn_list) if X_mn_list else None
+    X_ma = np.array(X_ma_list) if X_ma_list else None
+    return valid_tracks, X_mn, X_ma
+
+class HybridScaler:
+    """Handles inversion of hybrid-space vectors back to original musicnn feature space.
+    
+    The hybrid blend process is:
+    1. Scale musicnn features -> PCA-reduce -> weight-scale
+    2. Scale maest features -> PCA-reduce -> weight-scale  
+    3. Concatenate weighted vectors
+    
+    To invert for naming, we need to:
+    1. Split hybrid vector into musicnn and maest portions
+    2. Un-weight each portion (divide by weights)
+    3. Inverse PCA for each
+    4. Inverse scale for each
+    5. Return only the musicnn portion (used for naming with mood labels)
+    """
+    def __init__(self, m_scaler, m_pca, a_scaler, a_pca, n_musicnn_dims):
+        """Initialize with the PCA models and scalers from hybrid blending.
+        
+        Args:
+            m_scaler: StandardScaler for musicnn features
+            m_pca: PCA model for musicnn features (can be None if no PCA applied)
+            a_scaler: StandardScaler for maest features
+            a_pca: PCA model for maest features (can be None if no PCA applied)
+            n_musicnn_dims: Original dimensionality of musicnn feature space
+        """
+        self.m_scaler = m_scaler
+        self.m_pca = m_pca
+        self.a_scaler = a_scaler
+        self.a_pca = a_pca
+        self.n_musicnn_dims = n_musicnn_dims
+        
+    def inverse_transform(self, hybrid_vec, musicnn_output_dims=None, maest_output_dims=None):
+        """Invert a hybrid-space vector back to original musicnn feature space.
+        
+        Args:
+            hybrid_vec: 1D numpy array in hybrid blended space
+            musicnn_output_dims: PCA output dims for musicnn (from stored config)
+            maest_output_dims: PCA output dims for maest (from stored config)
+            
+        Returns:
+            1D numpy array in original musicnn feature space (for naming)
+        """
+        if hybrid_vec is None or len(hybrid_vec) == 0:
+            return None
+            
+        hybrid_vec = np.array(hybrid_vec).flatten()
+        # Use provided dims or fall back to model attributes
+        n_musicnn_pca = musicnn_output_dims if musicnn_output_dims is not None else (self.m_pca.n_components_ if self.m_pca else self.n_musicnn_dims)
+        n_maest_pca = maest_output_dims if maest_output_dims is not None else (self.a_pca.n_components_ if self.a_pca else 0)
+        
+        # Split hybrid vector into musicnn and maest portions
+        musicnn_portion = hybrid_vec[:n_musicnn_pca]
+        maest_portion = hybrid_vec[n_musicnn_pca:n_musicnn_pca + n_maest_pca]
+        
+        # Un-weight (reverse the weight scaling from lines 224-225)
+        musicnn_unweighted = musicnn_portion / HYBRID_WEIGHT_MUSICNN if HYBRID_WEIGHT_MUSICNN > 0 else musicnn_portion
+        maest_unweighted = maest_portion / HYBRID_WEIGHT_MAEST if HYBRID_WEIGHT_MAEST > 0 else maest_portion
+        
+        # Inverse PCA for musicnn (to get back to scaled space)
+        if self.m_pca is not None:
+            musicnn_scaled = self.m_pca.inverse_transform(musicnn_unweighted.reshape(1, -1)).flatten()
+        else:
+            musicnn_scaled = musicnn_unweighted
+            
+        # Inverse scale for musicnn (to get back to original space)
+        if self.m_scaler is not None:
+            musicnn_original = self.m_scaler.inverse_transform(musicnn_scaled.reshape(1, -1)).flatten()
+        else:
+            musicnn_original = musicnn_scaled
+            
+        # Truncate to original musicnn dimensions if needed
+        if len(musicnn_original) > self.n_musicnn_dims:
+            musicnn_original = musicnn_original[:self.n_musicnn_dims]
+            
+        return musicnn_original
+
+
+def _pca_reduce(data, n_components, log_prefix, stream_name=""):
+    """PCA-reduce data to n_components. Returns (scaler, pca_model, reduced_data).
+    Returns (None, None, data) if n_components >= data.shape[1].
+    """
+
+    if data is None or data.shape[0] == 0:
+        return None, None, None
+
+    scaler = StandardScaler()
+    scaled = scaler.fit_transform(data)
+    effective_n = min(n_components, data.shape[1], data.shape[0])
+
+    if effective_n <= 0 or effective_n >= data.shape[1]:
+        return scaler, None, scaled
+
+    pca = PCA(n_components=effective_n)
+    reduced = pca.fit_transform(scaled)
+
+    return scaler, pca, reduced
+
 
 def _prepare_and_scale_data(X_feat, X_embed, use_embeddings):
     """Selects the data source for clustering (features or embeddings) and scales it."""
@@ -486,10 +704,38 @@ def _format_and_score_iteration_result(
     for label_id, songs_list in filtered_clusters.items():
         if songs_list and label_id in centers:
             center_vec = centers[label_id] # This is the vector in the clustered space
+            
+            # Check if this is hybrid mode and we need to invert the centroid
+            hybrid_pca_models = params.get('_hybrid_pca_models')
+            is_hybrid_mode = bool(hybrid_pca_models)
+            
             if use_embeddings:
                 feature_centroid_vec = _get_feature_centroid_for_embedding_cluster(label_id, labels, X_feat_orig)
                 if feature_centroid_vec is None: continue
                 name, centroid_details = _name_cluster(feature_centroid_vec, None, False, active_moods, None)
+            elif is_hybrid_mode:
+                # Hybrid mode: invert hybrid-space centroid back to musicnn feature space for naming
+                # Extract hybrid PCA models
+                m_model = hybrid_pca_models.get('musicnn', {})
+                a_model = hybrid_pca_models.get('maest', {})
+                m_scaler_h = m_model.get('scaler')
+                m_pca_h = m_model.get('pca')
+                a_scaler_h = a_model.get('scaler')
+                a_pca_h = a_model.get('pca')
+                
+                # Get original musicnn dimensionality (58: 2 + 55 mood labels + other features)
+                n_musicnn_dims = 2 + len(MUSICNN_MOOD_LABELS) + len(OTHER_FEATURE_LABELS)
+                
+                # Create HybridScaler and invert
+                musicnn_out_dims = m_model.get('output_dims')
+                maest_out_dims = a_model.get('output_dims')
+                hybrid_scaler = HybridScaler(m_scaler_h, m_pca_h, a_scaler_h, a_pca_h, n_musicnn_dims)
+                inverted_vec
+                logger.warning(f"{log_prefix} Iteration {run_idx}: Failed to invert hybrid centroid for cluster {label_id}. Skipping.")
+                continue
+                
+                # Name using the inverted vector (no additional scaler/pca needed)
+                name, centroid_details = _name_cluster(inverted_vec, None, False, active_moods, None)
             else:
                 name, centroid_details = _name_cluster(center_vec, pca, params['pca_config']['enabled'], active_moods, scaler)
 

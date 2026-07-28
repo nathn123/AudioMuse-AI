@@ -35,12 +35,12 @@ def fetch_track_metadata_map(item_ids):
         logger.warning(f"Failed to fetch track metadata: {e}")
     return metadata_map
 
-def score_vector(row, mood_labels_list, other_feature_labels_list): # other_feature_labels_list is now passed
+def score_vector(row, mood_labels_list, other_feature_labels_list, mood_column='mood_vector'): # other_feature_labels_list is now passed
     """Converts a database row into a numerical feature vector for clustering."""
     # Extract features from the database row
     tempo = float(row['tempo']) if row['tempo'] is not None else 0.0
     energy = float(row['energy']) if row['energy'] is not None else 0.0 # Get energy
-    mood_str = row['mood_vector'] or ""
+    mood_str = row[mood_column] or ""
     
     # Normalize tempo to 0-1 range
     tempo_range = TEMPO_MAX_BPM - TEMPO_MIN_BPM

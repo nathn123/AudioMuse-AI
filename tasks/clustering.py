@@ -117,7 +117,10 @@ def run_clustering_batch_task(
     exploitation_probability,
     mutation_config_json,
     initial_subset_track_ids_json,
-    enable_clustering_embeddings_param
+    enable_clustering_embeddings_param,
+    clustering_mode_param="musicnn",
+    hybrid_weight_musicnn_param=0.3,
+    hybrid_weight_maest_param=0.7
 ):
     """
     Executes a batch of clustering iterations. This task is enqueued by the main clustering task.
@@ -201,7 +204,8 @@ def run_clustering_batch_task(
                     exploitation_probability=exploitation_probability,
                     mutation_config=mutation_config,
                     score_weights=score_weights_dict,
-                    enable_clustering_embeddings=enable_clustering_embeddings_param
+                    enable_clustering_embeddings=enable_clustering_embeddings_param,
+                    clustering_mode=clustering_mode_param
                 )
                 iterations_completed += 1
 
@@ -222,6 +226,23 @@ def run_clustering_batch_task(
                 "full_best_result_from_batch": best_result_in_batch,
                 "final_subset_track_ids": current_sampled_track_ids
             }
+            try:
+                logger.info("updated version")
+                json.dumps(final_details)
+            except TypeError as e:
+                logger.error(f"Non-serializable object found: {e}")
+                # Recursively walk and print where it lives
+                def find_non_serial(obj, path=""):
+                    if isinstance(obj, dict):
+                        for k, v in obj.items():
+                            find_non_serial(v, f"{path}.{k}")
+                    elif isinstance(obj, list):
+                        for i, v in enumerate(obj):
+                            find_non_serial(v, f"{path}[{i}]")
+                    else:
+                        if not isinstance(obj, (str, int, float, bool, type(None))):
+                            logger.error(f"Found {type(obj).__name__} at {path}: {obj}")
+                find_non_serial(final_details, "root")
             _log_and_update(f"Batch complete. Best score: {best_score_in_batch:.2f}", 100, details=final_details, state=TASK_STATUS_SUCCESS)
             return {
                 "status": "SUCCESS",
@@ -256,7 +277,10 @@ def run_clustering_task(
     mistral_api_key_param, mistral_model_name_param,
     top_n_moods_for_clustering_param,
     top_n_playlists_param, # *** NEW: Accept Top N parameter ***
-    enable_clustering_embeddings_param):
+    enable_clustering_embeddings_param,
+    clustering_mode_param="musicnn",
+    hybrid_weight_musicnn_param=0.3,
+    hybrid_weight_maest_param=0.7):
     """
     Main entry point for the clustering process.
     Orchestrates data preparation, batch job creation, result aggregation, and playlist creation.
@@ -289,6 +313,7 @@ def run_clustering_task(
         "pca_components_min": pca_components_min,
         "pca_components_max": pca_components_max,
         "use_embeddings": enable_clustering_embeddings_param,
+        "clustering_mode": clustering_mode_param,
         "top_n_playlists": top_n_playlists_param, # *** NEW: Log Top N parameter ***
         "stratification_percentile": stratified_sampling_target_percentile_param,
         "score_weights": {
@@ -455,7 +480,8 @@ def run_clustering_task(
                         score_weight_davies_bouldin_param, score_weight_calinski_harabasz_param,
                         score_weight_purity_param, score_weight_other_feature_diversity_param,
                         score_weight_other_feature_purity_param, top_n_moods_for_clustering_param,
-                        enable_clustering_embeddings_param
+                        enable_clustering_embeddings_param,
+                        clustering_mode_param, hybrid_weight_musicnn_param, hybrid_weight_maest_param
                     )
                     next_batch_to_launch += 1
 
@@ -790,7 +816,8 @@ def _launch_batch_job(state_dict, parent_task_id, batch_idx, total_runs, genre_m
         score_weight_diversity, score_weight_silhouette, score_weight_davies_bouldin,
         score_weight_calinski_harabasz, score_weight_purity,
         score_weight_other_feature_diversity, score_weight_other_feature_purity,
-        top_n_moods, enable_embeddings
+        top_n_moods, enable_embeddings,
+        clustering_mode, hybrid_weight_musicnn, hybrid_weight_maest
     ) = args
 
     batch_job_id = f"{parent_task_id}_batch_{batch_idx}"
@@ -832,7 +859,10 @@ def _launch_batch_job(state_dict, parent_task_id, batch_idx, total_runs, genre_m
             "coord_mutation_fraction": MUTATION_KMEANS_COORD_FRACTION
         }),
         "initial_subset_track_ids_json": json.dumps(state_dict["last_subset_ids"]),
-        "enable_clustering_embeddings_param": enable_embeddings
+        "enable_clustering_embeddings_param": enable_embeddings,
+        "clustering_mode_param": clustering_mode,
+        "hybrid_weight_musicnn_param": hybrid_weight_musicnn,
+        "hybrid_weight_maest_param": hybrid_weight_maest
     }
 
     new_job = rq_queue_default.enqueue(
