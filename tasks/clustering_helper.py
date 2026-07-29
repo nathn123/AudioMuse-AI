@@ -115,7 +115,8 @@ def _perform_single_clustering_iteration(
     spectral_params_ranges, pca_params_ranges, active_mood_labels,
     max_songs_per_cluster, log_prefix,
     elite_solutions_params_list, exploitation_probability, mutation_config,
-    score_weights, enable_clustering_embeddings, clustering_mode="musicnn"):
+    score_weights, enable_clustering_embeddings, clustering_mode="musicnn",
+    hybrid_pca_musicnn=HYBRID_PCA_MUSICNN, hybrid_pca_maest=HYBRID_PCA_MAEST):
     """
     Orchestrates a single evolutionary run of the clustering process.
     This function is now a high-level coordinator.
@@ -215,8 +216,8 @@ def _perform_single_clustering_iteration(
             X_musicnn_raw, X_maest_raw = data_to_cluster
             
             # Use fixed HYBRID_PCA_* values (evolutionary PCA is skipped for hybrid mode)
-            m_scaler, m_pca, X_musicnn_pca = _pca_reduce(X_musicnn_raw, HYBRID_PCA_MUSICNN, log_prefix, "MusicNN")
-            a_scaler, a_pca, X_maest_pca = _pca_reduce(X_maest_raw, HYBRID_PCA_MAEST, log_prefix, "MAEST")
+            m_scaler, m_pca, X_musicnn_pca = _pca_reduce(X_musicnn_raw, hybrid_pca_musicnn, log_prefix, "MusicNN")
+            a_scaler, a_pca, X_maest_pca = _pca_reduce(X_maest_raw, hybrid_pca_maest, log_prefix, "MAEST")
             
             if X_musicnn_pca is None or X_maest_pca is None:
                 logger.error(f"{log_prefix} Iteration {run_idx}: PCA reduction failed for hybrid blend.")

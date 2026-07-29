@@ -14,6 +14,7 @@ from config import (
     NUM_CLUSTERS_MAX, DBSCAN_EPS_MIN, DBSCAN_EPS_MAX, DBSCAN_MIN_SAMPLES_MIN,
     DBSCAN_MIN_SAMPLES_MAX, GMM_N_COMPONENTS_MIN, GMM_N_COMPONENTS_MAX,
     SPECTRAL_N_CLUSTERS_MIN, SPECTRAL_N_CLUSTERS_MAX, ENABLE_CLUSTERING_EMBEDDINGS,
+    HYBRID_PCA_MUSICNN, HYBRID_PCA_MAEST,
     PCA_COMPONENTS_MIN, PCA_COMPONENTS_MAX, CLUSTERING_RUNS, TOP_N_MOODS,
     AI_MODEL_PROVIDER, OLLAMA_SERVER_URL, OLLAMA_MODEL_NAME, OPENAI_SERVER_URL,
     OPENAI_MODEL_NAME, OPENAI_API_KEY, GEMINI_API_KEY, GEMINI_MODEL_NAME,
@@ -319,6 +320,8 @@ def start_clustering_endpoint():
             "clustering_mode_param": data.get('clustering_mode', CLUSTERING_MODE),
             "hybrid_weight_musicnn_param": float(data.get('hybrid_weight_musicnn', HYBRID_WEIGHT_MUSICNN)),
             "hybrid_weight_maest_param": float(data.get('hybrid_weight_maest', HYBRID_WEIGHT_MAEST)),
+            "hybrid_pca_musicnn_param": int(data.get('hybrid_pca_musicnn', HYBRID_PCA_MUSICNN)),
+            "hybrid_pca_maest_param": int(data.get('hybrid_pca_maest', HYBRID_PCA_MAEST)),
     }
 
     # Clean up details of previously successful or stale tasks before starting a new one

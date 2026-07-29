@@ -122,7 +122,9 @@ def run_clustering_batch_task(
     enable_clustering_embeddings_param,
     clustering_mode_param="musicnn",
     hybrid_weight_musicnn_param=0.3,
-    hybrid_weight_maest_param=0.7
+    hybrid_weight_maest_param=0.7,
+    hybrid_pca_musicnn_param=20,
+    hybrid_pca_maest_param=40
 ):
     """
     Executes a batch of clustering iterations. This task is enqueued by the main clustering task.
@@ -207,7 +209,9 @@ def run_clustering_batch_task(
                     mutation_config=mutation_config,
                     score_weights=score_weights_dict,
                     enable_clustering_embeddings=enable_clustering_embeddings_param,
-                    clustering_mode=clustering_mode_param
+                    clustering_mode=clustering_mode_param,
+                    hybrid_pca_musicnn=hybrid_pca_musicnn_param,
+                    hybrid_pca_maest=hybrid_pca_maest_param
                 )
                 iterations_completed += 1
 
@@ -282,7 +286,9 @@ def run_clustering_task(
     enable_clustering_embeddings_param,
     clustering_mode_param="musicnn",
     hybrid_weight_musicnn_param=0.3,
-    hybrid_weight_maest_param=0.7):
+    hybrid_weight_maest_param=0.7,
+    hybrid_pca_musicnn_param=20,
+    hybrid_pca_maest_param=40):
     """
     Main entry point for the clustering process.
     Orchestrates data preparation, batch job creation, result aggregation, and playlist creation.
@@ -504,7 +510,8 @@ def run_clustering_task(
                         score_weight_purity_param, score_weight_other_feature_diversity_param,
                         score_weight_other_feature_purity_param, top_n_moods_for_clustering_param,
                         enable_clustering_embeddings_param,
-                        clustering_mode_param, hybrid_weight_musicnn_param, hybrid_weight_maest_param
+                        clustering_mode_param, hybrid_weight_musicnn_param, hybrid_weight_maest_param,
+                        hybrid_pca_musicnn_param, hybrid_pca_maest_param
                     )
                     next_batch_to_launch += 1
 
@@ -840,7 +847,8 @@ def _launch_batch_job(state_dict, parent_task_id, batch_idx, total_runs, genre_m
         score_weight_calinski_harabasz, score_weight_purity,
         score_weight_other_feature_diversity, score_weight_other_feature_purity,
         top_n_moods, enable_embeddings,
-        clustering_mode, hybrid_weight_musicnn, hybrid_weight_maest
+        clustering_mode, hybrid_weight_musicnn, hybrid_weight_maest,
+        hybrid_pca_musicnn, hybrid_pca_maest
     ) = args
 
     batch_job_id = f"{parent_task_id}_batch_{batch_idx}"
@@ -885,7 +893,9 @@ def _launch_batch_job(state_dict, parent_task_id, batch_idx, total_runs, genre_m
         "enable_clustering_embeddings_param": enable_embeddings,
         "clustering_mode_param": clustering_mode,
         "hybrid_weight_musicnn_param": hybrid_weight_musicnn,
-        "hybrid_weight_maest_param": hybrid_weight_maest
+        "hybrid_weight_maest_param": hybrid_weight_maest,
+        "hybrid_pca_musicnn_param": hybrid_pca_musicnn,
+        "hybrid_pca_maest_param": hybrid_pca_maest
     }
 
     new_job = rq_queue_default.enqueue(

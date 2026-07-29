@@ -33,6 +33,10 @@ const hybridWeightsDiv = document.getElementById('hybrid-weights');
 const dualConsensusThresholdDiv = document.getElementById('dual-consensus-threshold');
 const hybridWeightMusicnnSlider = document.getElementById('config-hybrid_weight_musicnn');
 const hybridWeightMaestSlider = document.getElementById('config-hybrid_weight_maest');
+const hybridPcaMusicnnInput = document.getElementById('config-hybrid_pca_musicnn');
+const hybridPcaMaestInput = document.getElementById('config-hybrid_pca_maest');
+const pcaSingleModeDiv = document.getElementById('pca-single-mode');
+const pcaDualModeDiv = document.getElementById('pca-dual-mode');
 const moodWeightLabel = document.getElementById('mood-weight-label');
 const genreWeightLabel = document.getElementById('genre-weight-label');
 
@@ -185,6 +189,13 @@ function renderConfig(config) {
         hybridWeightMaestSlider.value = maVal;
         if (genreWeightLabel) genreWeightLabel.textContent = `${maVal}%`;
     }
+    // Hybrid PCA dims
+    if (hybridPcaMusicnnInput && config.hybrid_pca_musicnn !== undefined) {
+        hybridPcaMusicnnInput.value = config.hybrid_pca_musicnn;
+    }
+    if (hybridPcaMaestInput && config.hybrid_pca_maest !== undefined) {
+        hybridPcaMaestInput.value = config.hybrid_pca_maest;
+    }
 
     // Algorithm Specific
     document.getElementById('config-dbscan_eps_min').value = config.dbscan_eps_min || 0;
@@ -244,16 +255,32 @@ function toggleClusteringMode() {
     if (!clusteringModeSelect) return;
     const mode = clusteringModeSelect.value;
 
-    // Hide both conditional sections first
+    // Hide conditionals first
     if (hybridWeightsDiv) hybridWeightsDiv.classList.add('hidden');
     if (dualConsensusThresholdDiv) dualConsensusThresholdDiv.classList.add('hidden');
+    if (pcaSingleModeDiv) pcaSingleModeDiv.classList.add('hidden');
+    if (pcaDualModeDiv) pcaDualModeDiv.classList.add('hidden');
 
     if (mode === 'hybrid_blend') {
         if (hybridWeightsDiv) hybridWeightsDiv.classList.remove('hidden');
+        if (pcaDualModeDiv) pcaDualModeDiv.classList.remove('hidden');
     } else if (mode === 'dual_consensus') {
         if (dualConsensusThresholdDiv) dualConsensusThresholdDiv.classList.remove('hidden');
+        if (pcaDualModeDiv) pcaDualModeDiv.classList.remove('hidden');
+    } else {
+        // musicnn or maest — show single-mode PCA with dynamic tooltips
+        if (pcaSingleModeDiv) pcaSingleModeDiv.classList.remove('hidden');
+        // Update tooltips to reflect the selected embedder
+        const tooltipMin = document.getElementById('pca-single-tooltip-min');
+        const tooltipMax = document.getElementById('pca-single-tooltip-max');
+        if (mode === 'maest') {
+            if (tooltipMin) tooltipMin.textContent = 'Minimum PCA components for MAEST 469-dim feature vector. Set to 0 to disable. Try 10-50.';
+            if (tooltipMax) tooltipMax.textContent = 'Maximum PCA components for MAEST 469-dim feature vector. Capped at feature dim. Try 50-200.';
+        } else {
+            if (tooltipMin) tooltipMin.textContent = 'Minimum PCA components for MusiCNN 58-dim feature vector. Set to 0 to disable. Try 3-10.';
+            if (tooltipMax) tooltipMax.textContent = 'Maximum PCA components for MusiCNN 58-dim feature vector. Capped at feature dim. Try 8-20.';
+        }
     }
-    // For 'musicnn' and 'maest' (single-model modes), neither section is shown.
 }
 
 /**
@@ -484,7 +511,9 @@ async function startTask(taskType) {
             enable_clustering_embeddings: document.getElementById('config-enable_clustering_embeddings').checked,
             clustering_mode: clusteringModeSelect ? clusteringModeSelect.value : 'hybrid_blend',
             hybrid_weight_musicnn: hybridWeightMusicnnSlider ? parseFloat(hybridWeightMusicnnSlider.value) / 100.0 : 0.3,
-            hybrid_weight_maest: hybridWeightMaestSlider ? parseFloat(hybridWeightMaestSlider.value) / 100.0 : 0.7
+            hybrid_weight_maest: hybridWeightMaestSlider ? parseFloat(hybridWeightMaestSlider.value) / 100.0 : 0.7,
+            hybrid_pca_musicnn: hybridPcaMusicnnInput ? parseInt(hybridPcaMusicnnInput.value) : 20,
+            hybrid_pca_maest: hybridPcaMaestInput ? parseInt(hybridPcaMaestInput.value) : 40
         });
     }
 
