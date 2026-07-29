@@ -115,6 +115,7 @@ def get_score_endpoint():
 def get_embedding_endpoint():
     """
     Get the embedding vector from the database for a given id.
+    Optionally specify which model's embedding to fetch.
     ---
     tags:
       - External
@@ -123,6 +124,12 @@ def get_embedding_endpoint():
         in: query
         required: true
         description: The Item ID of the track.
+        schema:
+          type: string
+      - name: model
+        in: query
+        required: false
+        description: Which embedding to return. "musicnn" (default), "maest", or "both".
         schema:
           type: string
     responses:
@@ -142,6 +149,10 @@ def get_embedding_endpoint():
     if not raw_id:
         return jsonify({"error": "Missing 'id' parameter"}), 400
 
+    model = request.args.get('model', 'musicnn').lower().strip()
+    if model not in ('musicnn', 'maest', 'both'):
+        model = 'musicnn'
+
     try:
         try:
             item_id = _resolve_external_id(raw_id)
@@ -150,21 +161,37 @@ def get_embedding_endpoint():
         if not item_id:
             return jsonify({"error": f"Embedding not found for id: {raw_id}"}), 404
         db = get_db()
-        with db.cursor(cursor_factory=DictCursor) as cur:
-            cur.execute("SELECT * FROM embedding WHERE item_id = %s", (item_id,))
-            embedding_data = cur.fetchone()
+        result = {}
 
-        if embedding_data:
-            from app_server_context import provider_echo_id
-            embedding_dict = dict(embedding_data)
-            embedding_dict['item_id'] = provider_echo_id(raw_id)
-            if embedding_dict.get('embedding'):
-                # The embedding is stored as BYTEA, convert it back to a list of floats
-                embedding_vector = np.frombuffer(embedding_dict['embedding'], dtype=np.float32)
-                embedding_dict['embedding'] = embedding_vector.tolist()
-            return jsonify(embedding_dict)
-        else:
-            return jsonify({"error": f"Embedding not found for id: {raw_id}"}), 404
+        if model in ('musicnn', 'both'):
+            with db.cursor(cursor_factory=DictCursor) as cur:
+                cur.execute("SELECT * FROM embedding WHERE item_id = %s", (item_id,))
+                row = cur.fetchone()
+            if row:
+                d = dict(row)
+                if d.get('embedding'):
+                    d['embedding'] = np.frombuffer(d['embedding'], dtype=np.float32).tolist()
+                result['musicnn'] = d
+
+        if model in ('maest', 'both'):
+            with db.cursor(cursor_factory=DictCursor) as cur:
+                cur.execute("SELECT * FROM maest_embedding WHERE item_id = %s", (item_id,))
+                row = cur.fetchone()
+            if row:
+                d = dict(row)
+                if d.get('embedding'):
+                    d['embedding'] = np.frombuffer(d['embedding'], dtype=np.float32).tolist()
+                result['maest'] = d
+
+        if not result:
+            return jsonify({"error": f"Embedding not found for id: {item_id} (model={model})"}), 404
+
+        # If single model requested, return flat dict (backward compat)
+        if model != 'both' and len(result) == 1:
+            return jsonify(list(result.values())[0])
+
+        return jsonify(result)
+
     except Exception as e:
         logger.exception(f"Error fetching embedding for id {raw_id}")
         err, status = error_manager.error_response(error_manager.classify(e, ERR_DB_QUERY))

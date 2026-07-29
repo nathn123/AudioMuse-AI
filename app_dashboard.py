@@ -59,37 +59,24 @@ def dashboard_page():
       200:
         description: HTML page rendered.
     """
-    return render_template('dashboard.html', title='AudioMuse-AI - Dashboard', active='dashboard')
+    import config
+
+    analysis_mode = getattr(config, 'ANALYSIS_MODE', 'musicnn')
+    embedder_type_display = {
+        'musicnn': 'MUSICNN',
+        'maest': 'MAEST',
+        'both': 'MUSICNN + MAEST',
+    }.get(analysis_mode, 'MUSICNN')
+
+    return render_template('dashboard.html', title='AudioMuse-AI - Dashboard', active='dashboard',
+                           embedder_type=embedder_type_display,
+                           embedding_dim=config.EMBEDDING_DIMENSION,
+                           mood_labels_count=len(config.MOOD_LABELS_RESOLVED),
+                           models_enabled=analysis_mode)
 
 
 # --- Browse view: paginated Song / Artist / Album listing --------------------
 # A generic listing the dashboard numbers link into. Every query is LIMIT-bounded
-# (page_size + 1, to derive has_more) so NO request can ever return the whole
-# catalogue, and the response carries METADATA ONLY (title/author/album, plus the
-# per-copy file PATHS for the duplicates view) - never the internal fp_ item_id -
-# so there is nothing to leak. Deep pages are clamped by DASHBOARD_BROWSE_MAX_OFFSET
-# so a 1M-row table can never be walked end to end.
-
-_BROWSE_KINDS = ('songs', 'artists', 'albums')
-_BROWSE_FILTERS = ('all', 'unique', 'duplicates', 'orphan')
-_BROWSE_MIN_QUERY = 2
-
-
-@dashboard_bp.route('/browse', methods=['GET'])
-def browse_page():
-    try:
-        servers = [
-            {'name': s['name'], 'is_default': bool(s['is_default'])}
-            for s in registry.list_servers()
-        ]
-    except Exception:
-        logger.debug("browse: could not list servers", exc_info=True)
-        servers = []
-    return render_template(
-        'browse.html', title='AudioMuse-AI - Browse', active='browse',
-        browse_servers=servers, page_size=config.DASHBOARD_BROWSE_PAGE_SIZE,
-        max_offset=config.DASHBOARD_BROWSE_MAX_OFFSET,
-    )
 
 
 def _browse_like(value):
@@ -541,6 +528,14 @@ def _collect_fast_metrics(cur):
         # A genuine subset of the catalogue: CLAP is a separate pass that runs
         # after analysis, so its percentage can really be < 100.
         'clap_indexed': _counted_or_none(cur, "SELECT COUNT(*) FROM clap_embedding"),
+        'musicnn_mood_count': _counted_or_none(
+            cur,
+            "SELECT COUNT(*) FROM score WHERE mood_vector IS NOT NULL AND mood_vector <> ''",
+        ),
+        'maest_mood_count': _counted_or_none(
+            cur,
+            "SELECT COUNT(*) FROM score WHERE maest_mood_vector IS NOT NULL AND maest_mood_vector <> ''",
+        ),
     }
     metrics['music_servers'] = _collect_music_server_metrics(
         cur, total_songs=metrics['total_songs']

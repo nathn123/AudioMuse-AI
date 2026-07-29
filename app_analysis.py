@@ -24,7 +24,7 @@ import uuid
 import logging
 
 # Import configuration from the main config.py
-from config import NUM_RECENT_ALBUMS, TOP_N_MOODS, TASK_STATUS_PENDING, CLEANING_CATALOGUE
+from config import NUM_RECENT_ALBUMS, TOP_N_MOODS, TASK_STATUS_PENDING, ANALYSIS_MODE, CLEANING_CATALOGUE
 
 # RQ import
 from rq import Retry
@@ -124,9 +124,22 @@ def start_analysis_endpoint():
     # The task now gets these details from the central config.
     num_recent_albums = int(data.get('num_recent_albums', NUM_RECENT_ALBUMS))
     top_n_moods = int(data.get('top_n_moods', TOP_N_MOODS))
-    logger.info(
-        f"Starting analysis request: num_recent_albums={num_recent_albums}, top_n_moods={top_n_moods}"
-    )
+# ─── Parse model selection ──────────────────────────────────────
+    models_param = data.get('analysis_models')
+    if models_param is None:
+        raw_mode = ANALYSIS_MODE
+        if raw_mode == 'both':
+            models_enabled = ['musicnn', 'maest']
+        else:
+            models_enabled = [raw_mode]
+    elif models_param == 'both':
+        models_enabled = ['musicnn', 'maest']
+    elif models_param == 'maest':
+        models_enabled = ['maest']
+    else:  # 'musicnn' or default
+        models_enabled = ['musicnn']
+
+    logger.info(f"Starting analysis: num_recent_albums={num_recent_albums}, top_n_moods={top_n_moods}, models={models_enabled}")
 
     job_id = str(uuid.uuid4())
 
@@ -140,7 +153,7 @@ def start_analysis_endpoint():
     # MODIFIED: The arguments passed to the task are updated to match the new function signature.
     job = rq_queue_high.enqueue(
         'tasks.analysis.run_analysis_task',
-        args=(num_recent_albums, top_n_moods),
+        args=(num_recent_albums, top_n_moods, models_enabled),
         job_id=job_id,
         description="Main Music Analysis",
         retry=Retry(max=3),

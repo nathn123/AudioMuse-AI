@@ -369,6 +369,26 @@
                     <button type="button" id="advanced-collapse-all">Collapse all</button>
                 </div>
                 <div id="advanced-fields"></div>
+
+                                <!-- Audio Embedder Type -->
+                <div class="section" style="margin-top:1rem;">
+                    <h3 style="margin-bottom:1rem;">Audio Embedder</h3>
+                    <div class="field-row">
+                        <label for="EMBEDDER_TYPE" class="label-with-tooltip">
+                            Embedding model
+                            <span class="info-tooltip" tabindex="0">
+                                <span class="info-icon"></span>
+                                <span class="tooltip-text">Which model to use for audio embedding extraction. MusiCNN (legacy) produces 200-dim embeddings and 50 mood labels. MAEST produces 1280-dim embeddings and 21 genre tags. Changing this requires re-analysis of all tracks and a Voyager index rebuild.</span>
+                            </span>
+                        </label>
+                        <select id="EMBEDDER_TYPE" name="EMBEDDER_TYPE">
+                            <option value="musicnn">MusiCNN (200-dim, 50 mood labels)</option>
+                            <option value="maest">MAEST (1280-dim, 21 genre tags)</option>
+                            <option value="both">Both — MusiCNN + MAEST</option>
+                        </select>
+                        <small style="margin-top:0.25rem; display:block; opacity:0.8;">⚠️ Requires MAEST ONNX model in /app/model/. "Both" runs both models per track.</small>
+                    </div>
+                </div>
             </details>
 
             {% if lyrics_enabled %}
