@@ -140,55 +140,56 @@ def _perform_single_clustering_iteration(
         
         with app.app_context():
             # Determine which mood labels to use based on clustering mode
-            if clustering_mode == "maest" or clustering_mode == "hybrid_blend":
-                # For maest or hybrid_blend, we need both feature sets
+            if clustering_mode == "maest" or clustering_mode == "hybrid_blend" or clustering_mode == "dual_consensus":
+                # All dual-data modes share the same data fetch
                 if clustering_mode == "maest":
-                    # Maest-only: use MAEST labels for naming/scoring
                     iteration_mood_labels = MAEST_MOOD_LABELS
                 else:
-                    # Hybrid: use MUSICNN labels for naming/scoring (moods)
                     iteration_mood_labels = MUSICNN_MOOD_LABELS
-                
+
                 valid_tracks, X_feat_musicnn, X_feat_maest = _prepare_iteration_data_both(
                     item_ids_for_subset, MUSICNN_MOOD_LABELS, MAEST_MOOD_LABELS, log_prefix, run_idx
                 )
                 if valid_tracks is None:
                     return {"fitness_score": -1.0}
-                
+
                 # Build data_to_cluster based on mode
                 if clustering_mode == "maest":
-                    # Use MAEST features only
                     if X_feat_maest is None or X_feat_maest.shape[0] == 0:
                         logger.error(f"{log_prefix} Iteration {run_idx}: No MAEST features available.")
                         return {"fitness_score": -1.0}
                     scaler = StandardScaler()
                     data_to_cluster = scaler.fit_transform(X_feat_maest)
-                    # Set X_feat_orig to X_feat_maest for scoring consistency
                     X_feat_orig = X_feat_maest
-                    # Update active_mood_labels for naming/scoring
                     active_mood_labels = MAEST_MOOD_LABELS
-                else:  # hybrid_blend
-                    # Hybrid blend: PCA-reduce both, weight-scale, concatenate
-                    # NOTE: PCA components will be determined AFTER parameter generation
-                    # We store placeholders here and apply PCA after params are generated
+
+                elif clustering_mode == "hybrid_blend":
                     if X_feat_musicnn is None or X_feat_musicnn.shape[0] == 0:
                         logger.error(f"{log_prefix} Iteration {run_idx}: No MusicNN features available for hybrid blend.")
                         return {"fitness_score": -1.0}
                     if X_feat_maest is None or X_feat_maest.shape[0] == 0:
                         logger.error(f"{log_prefix} Iteration {run_idx}: No MAEST features available for hybrid blend.")
                         return {"fitness_score": -1.0}
-                    
-                    # For now, store raw data; PCA will be applied after param generation
-                    data_to_cluster = (X_feat_musicnn, X_feat_maest)  # Tuple marker for hybrid processing later
+                    data_to_cluster = (X_feat_musicnn, X_feat_maest)  # Tuple marker
                     use_hybrid_internal_pca = True
-                    # Set X_feat_orig to X_feat_musicnn for naming consistency (musicnn has mood labels)
                     X_feat_orig = X_feat_musicnn
-                    # Update active_mood_labels for naming
                     active_mood_labels = MUSICNN_MOOD_LABELS
+
+                else:  # dual_consensus
+                    if X_feat_musicnn is None or X_feat_musicnn.shape[0] == 0:
+                        logger.error(f"{log_prefix} Iteration {run_idx}: No MusicNN features for dual consensus.")
+                        return {"fitness_score": -1.0}
+                    if X_feat_maest is None or X_feat_maest.shape[0] == 0:
+                        logger.error(f"{log_prefix} Iteration {run_idx}: No MAEST features for dual consensus.")
+                        return {"fitness_score": -1.0}
+                    data_to_cluster = (X_feat_musicnn, X_feat_maest)  # Tuple marker
+                    use_hybrid_internal_pca = False
+                    X_feat_orig = X_feat_musicnn
+                    active_mood_labels = MUSICNN_MOOD_LABELS
+
             else:
                 # Default musicnn mode: use existing logic
                 if enable_clustering_embeddings:
-                    # Embedding-based clustering
                     valid_tracks, X_feat_orig, X_embed_raw = _prepare_iteration_data(
                         item_ids_for_subset, active_mood_labels, True, log_prefix, run_idx
                     )
@@ -196,7 +197,6 @@ def _perform_single_clustering_iteration(
                         return {"fitness_score": -1.0}
                     data_to_cluster, scaler = _prepare_and_scale_data(X_feat_orig, X_embed_raw, True)
                 else:
-                    # Traditional feature-based clustering
                     valid_tracks, X_feat_orig, X_embed_raw = _prepare_iteration_data(
                         item_ids_for_subset, active_mood_labels, False, log_prefix, run_idx
                     )
@@ -233,12 +233,92 @@ def _perform_single_clustering_iteration(
                 'maest': {'scaler': a_scaler, 'pca': a_pca, 'output_dims': X_maest_pca.shape[1]}
             }
 
+        # ─── Dual Consensus: run both streams independently, fuse ──────────────
+        if clustering_mode == "dual_consensus" and isinstance(data_to_cluster, tuple):
+            X_musicnn_raw, X_maest_raw = data_to_cluster
+            from .clustering_fusion import _fuse_coassociation
+
+            # Params are now generated at shared step 3 with clustering_mode='dual_consensus',
+            # yielding per-stream PCA configs (params['musicnn_pca'], params['maest_pca'])
+
+            pca_mn, pca_ma = None, None
+            scaler_mn = StandardScaler()
+            scaled_mn = scaler_mn.fit_transform(X_musicnn_raw)
+            mn_pca_cfg = params.get('musicnn_pca', params['pca_config'])
+            if mn_pca_cfg['enabled'] and mn_pca_cfg['components'] < X_musicnn_raw.shape[1]:
+                pca_mn = PCA(n_components=mn_pca_cfg['components'])
+                reduced_mn = pca_mn.fit_transform(scaled_mn)
+            else:
+                reduced_mn = scaled_mn
+
+            # Stream 2: MAEST — uses its own PCA config from params
+            scaler_ma = StandardScaler()
+            scaled_ma = scaler_ma.fit_transform(X_maest_raw)
+            ma_pca_cfg = params.get('maest_pca', params['pca_config'])
+            if ma_pca_cfg['enabled'] and ma_pca_cfg['components'] < X_maest_raw.shape[1]:
+                pca_ma = PCA(n_components=min(ma_pca_cfg['components'], X_maest_raw.shape[1], X_maest_raw.shape[0] - 1))
+                reduced_ma = pca_ma.fit_transform(scaled_ma)
+            else:
+                reduced_ma = scaled_ma
+
+            # Cluster both streams independently
+            labels_mn, centers_mn, _ = _apply_clustering_model(
+                reduced_mn, params['clustering_method_config'], log_prefix, run_idx
+            )
+            labels_ma, centers_ma, _ = _apply_clustering_model(
+                reduced_ma, params['clustering_method_config'], log_prefix, run_idx
+            )
+
+            if labels_mn is None or labels_ma is None:
+                logger.error(f"{log_prefix} Iteration {run_idx}: Dual consensus clustering failed on one or both streams.")
+                return {"fitness_score": -1.0}
+
+            # Fuse labels via co-association
+            fused_labels = _fuse_coassociation(
+                labels_mn, labels_ma,
+                X_a=reduced_mn, X_b=reduced_ma,
+                weight_a=HYBRID_WEIGHT_MUSICNN, weight_b=HYBRID_WEIGHT_MAEST,
+            )
+
+            # Build fused feature space for scoring (weighted concat of each stream in original space)
+            # Reuse the per-stream scalers/PCAs from above for the combined space
+            weight_mn = HYBRID_WEIGHT_MUSICNN
+            weight_ma = HYBRID_WEIGHT_MAEST
+            m_pca_reduced = reduced_mn * weight_mn
+            a_pca_reduced = reduced_ma * weight_ma
+            data_for_metrics = np.hstack([m_pca_reduced, a_pca_reduced])
+
+            # Build fused centroid map
+            fused_centers = {}
+            for cid in set(fused_labels):
+                if cid == -1:
+                    continue
+                mask = fused_labels == cid
+                if mask.sum() > 0:
+                    fused_centers[cid] = data_for_metrics[mask].mean(axis=0)
+
+            # Build HybridScaler for centroid inversion during naming
+            n_musicnn_dims = 2 + len(MUSICNN_MOOD_LABELS) + len(OTHER_FEATURE_LABELS)
+            params['_hybrid_pca_models'] = {
+                'musicnn': {'scaler': scaler_mn, 'pca': pca_mn, 'output_dims': reduced_mn.shape[1]},
+                'maest': {'scaler': scaler_ma, 'pca': pca_ma, 'output_dims': reduced_ma.shape[1]},
+            }
+            params['_hybrid_weights'] = {'musicnn': weight_mn, 'maest': weight_ma}
+            params['pca_config']['enabled'] = False
+
+            return _format_and_score_iteration_result(
+                fused_labels, valid_tracks, X_feat_orig, data_for_metrics,
+                fused_centers, None, None, None, active_mood_labels,
+                params, max_songs_per_cluster, run_idx, enable_clustering_embeddings, score_weights, log_prefix,
+                clustering_mode=clustering_mode,
+            )
+
         # 3. Generate Parameters: Use evolutionary approach (mutate elite or explore)
         params = _generate_evolutionary_parameters(
             elite_solutions_params_list, exploitation_probability, mutation_config,
             clustering_method, data_to_cluster, pca_params_ranges,
             num_clusters_min_max, dbscan_params_ranges, gmm_params_ranges, spectral_params_ranges,
-            log_prefix, run_idx
+            log_prefix, run_idx, clustering_mode=clustering_mode
         )
 
         # Attach hybrid PCA models to params and disable regular PCA for hybrid mode
@@ -446,23 +526,41 @@ def _mutate_param(value, min_val, max_val, delta, is_float=False):
     new_value = np.clip(new_value, min_val, max_val)
     return int(new_value) if not is_float else new_value
 
-def _generate_evolutionary_parameters(elites, exploitation_prob, mutation_cfg, method, data, *args):
-    """Decides to explore (random params) or exploit (mutate elite params)."""
-    if elites and random.random() < exploitation_prob:
-        chosen_elite = random.choice(elites)
-        return _mutate_parameters(chosen_elite, mutation_cfg, method, data, *args)
-    return _generate_random_parameters(method, data, *args)
+def _generate_evolutionary_parameters(elites, exploitation_prob, mutation_cfg, method, data, *args, clustering_mode='musicnn'):
+    """Decides to explore (random params) or exploit (mutate elite params).
 
-def _generate_random_parameters(method, data, pca_ranges, num_clust_ranges, db_ranges, gmm_ranges, spec_ranges, *args):
-    """Generates a completely new set of random parameters for clustering."""
+    When clustering_mode is 'dual_consensus', filters elites to only those
+    tagged with the same mode and generates per-stream PCA params.
+    """
+    # Filter elites by mode to prevent cross-contamination
+    if clustering_mode == 'dual_consensus':
+        mode_elites = [e for e in elites if e.get('clustering_mode') == 'dual_consensus']
+    else:
+        mode_elites = [e for e in elites if e.get('clustering_mode', 'musicnn') in ('musicnn', 'hybrid_blend', None)]
+
+    if mode_elites and random.random() < exploitation_prob:
+        chosen_elite = random.choice(mode_elites)
+        return _mutate_parameters(chosen_elite, mutation_cfg, method, data, *args, clustering_mode=clustering_mode)
+    return _generate_random_parameters(method, data, *args, clustering_mode=clustering_mode)
+
+def _generate_random_parameters(method, data, pca_ranges, num_clust_ranges, db_ranges, gmm_ranges, spec_ranges, *args, clustering_mode='musicnn'):
+    """Generates a completely new set of random parameters for clustering.
+
+    For dual_consensus mode, generates per-stream PCA configs via
+    _generate_random_dual_params.
+    """
+    if clustering_mode == 'dual_consensus' and isinstance(data, tuple):
+        return _generate_random_dual_params(method, data, pca_ranges, num_clust_ranges,
+                                            db_ranges, gmm_ranges, spec_ranges)
+
     max_pca = min(pca_ranges['components_max'], data.shape[1], data.shape[0] - 1)
     min_pca = pca_ranges['components_min']
     if min_pca > max_pca:
         min_pca = max_pca
-    
+
     pca_comps = random.randint(min_pca, max_pca) if max_pca >= min_pca and max_pca > 0 else min_pca
     pca_config = {"enabled": pca_comps > 0, "components": pca_comps}
-    
+
     max_k = data.shape[0]
     method_params = {}
 
@@ -494,21 +592,94 @@ def _generate_random_parameters(method, data, pca_ranges, num_clust_ranges, db_r
         if upper_k < lower_k: upper_k = lower_k
         n_clust = random.randint(lower_k, upper_k) if upper_k >= lower_k else lower_k
         method_params = {"n_clusters": n_clust, "random_state": random.randint(0, 10000)}
-        
-    return {"pca_config": pca_config, "clustering_method_config": {"method": method, "params": method_params}}
 
-def _mutate_parameters(elite_params, mutation_cfg, method, data, pca_ranges, num_clust_ranges, db_ranges, gmm_ranges, spec_ranges, *args):
-    """Takes an elite parameter set and applies small random changes."""
+    return {"pca_config": pca_config, "clustering_method_config": {"method": method, "params": method_params},
+            "clustering_mode": clustering_mode}
+
+
+def _generate_random_dual_params(method, data_tuple, pca_ranges, num_clust_ranges, db_ranges, gmm_ranges, spec_ranges):
+    """Generates random per-stream PCA parameters for dual consensus.
+
+    Each stream gets its own PCA components clamped to its dimension,
+    enabling independent exploration of the musicnn (58-dim) and MAEST
+    (469-dim) reduction spaces.
+    """
+    X_mn, X_ma = data_tuple
+
+    def _rand_pca(data):
+        max_pca = min(pca_ranges['components_max'], data.shape[1], data.shape[0] - 1)
+        min_pca = pca_ranges['components_min']
+        if min_pca > max_pca:
+            min_pca = max_pca
+        comps = random.randint(min_pca, max_pca) if max_pca >= min_pca and max_pca > 0 else min_pca
+        return {"enabled": comps > 0, "components": comps}
+
+    musicnn_pca = _rand_pca(X_mn)
+    maest_pca = _rand_pca(X_ma)
+
+    # Clustering method uses the smaller stream's track count for n_clusters bounds
+    max_k = X_mn.shape[0]
+    method_params = {}
+
+    if method == 'kmeans':
+        upper_k = min(num_clust_ranges[1], max_k)
+        lower_k = min(num_clust_ranges[0], upper_k)
+        if lower_k < 2 and upper_k >= 2: lower_k = 2
+        if upper_k < lower_k: upper_k = lower_k
+        k = random.randint(lower_k, upper_k) if upper_k >= lower_k and upper_k > 0 else lower_k
+        method_params = {"n_clusters": k}
+
+    elif method == 'dbscan':
+        eps = round(random.uniform(db_ranges['eps_min'], db_ranges['eps_max']), 2)
+        min_samples = random.randint(db_ranges['samples_min'], db_ranges['samples_max'])
+        method_params = {"eps": eps, "min_samples": min_samples}
+
+    elif method == 'gmm':
+        upper_k = min(gmm_ranges['n_components_max'], max_k)
+        lower_k = min(gmm_ranges['n_components_min'], upper_k)
+        if lower_k < 2 and upper_k >= 2: lower_k = 2
+        if upper_k < lower_k: upper_k = lower_k
+        n_comp = random.randint(lower_k, upper_k) if upper_k >= lower_k and upper_k > 0 else lower_k
+        method_params = {"n_components": n_comp}
+
+    elif method == 'spectral':
+        upper_k = min(spec_ranges['n_clusters_max'], max_k - 1)
+        lower_k = spec_ranges['n_clusters_min']
+        if lower_k < 2: lower_k = 2
+        if upper_k < lower_k: upper_k = lower_k
+        n_clust = random.randint(lower_k, upper_k) if upper_k >= lower_k else lower_k
+        method_params = {"n_clusters": n_clust, "random_state": random.randint(0, 10000)}
+
+    return {
+        "musicnn_pca": musicnn_pca,
+        "maest_pca": maest_pca,
+        "pca_config": {"enabled": False, "components": 0},  # Disabled — per-stream PCAs are embedded
+        "clustering_method_config": {"method": method, "params": method_params},
+        "clustering_mode": "dual_consensus",
+    }
+
+def _mutate_parameters(elite_params, mutation_cfg, method, data, pca_ranges, num_clust_ranges, db_ranges, gmm_ranges, spec_ranges, *args, clustering_mode='musicnn'):
+    """Takes an elite parameter set and applies small random changes.
+
+    For dual_consensus elites, mutates musicnn_pca and maest_pca
+    independently within their respective dimension bounds.
+    """
+    clustering_mode = elite_params.get('clustering_mode', 'musicnn')
+
+    if clustering_mode == 'dual_consensus':
+        return _mutate_dual_parameters(elite_params, mutation_cfg, method, data,
+                                       pca_ranges, num_clust_ranges, db_ranges, gmm_ranges, spec_ranges)
+
     elite_pca_cfg = elite_params['pca_config']
     elite_method_cfg = elite_params['clustering_method_config']
-    
+
     max_pca = min(pca_ranges['components_max'], data.shape[1], data.shape[0] - 1)
     min_pca = pca_ranges['components_min']
     if min_pca > max_pca:
         min_pca = max_pca
     mutated_pca_comps = _mutate_param(elite_pca_cfg.get('components', 0), min_pca, max_pca, mutation_cfg.get('int_abs_delta', 2))
     pca_config = {"enabled": mutated_pca_comps > 0, "components": mutated_pca_comps}
-    
+
     max_k = data.shape[0]
     method_params = {}
 
@@ -535,8 +706,68 @@ def _mutate_parameters(elite_params, mutation_cfg, method, data, pca_ranges, num
         elite_random_state = elite_method_cfg['params'].get("random_state", random.randint(0, 10000))
         mutated_random_state = _mutate_param(elite_random_state, 0, 10000, mutation_cfg.get("int_abs_delta", 100))
         method_params = {"n_clusters": n_clust, "random_state": mutated_random_state}
-        
-    return {"pca_config": pca_config, "clustering_method_config": {"method": method, "params": method_params}}
+
+    return {"pca_config": pca_config, "clustering_method_config": {"method": method, "params": method_params},
+            "clustering_mode": clustering_mode}
+
+
+def _mutate_dual_parameters(elite_params, mutation_cfg, method, data_tuple, pca_ranges, num_clust_ranges, db_ranges, gmm_ranges, spec_ranges):
+    """Mutates a dual_consensus elite's per-stream PCA configs independently."""
+    X_mn, X_ma = data_tuple
+    elite_method_cfg = elite_params['clustering_method_config']
+    delta = mutation_cfg.get('int_abs_delta', 2)
+
+    # Mutate musicnn PCA
+    elite_mn = elite_params.get('musicnn_pca', {'enabled': True, 'components': 20})
+    max_mn = min(pca_ranges['components_max'], X_mn.shape[1], X_mn.shape[0] - 1)
+    min_mn = pca_ranges['components_min']
+    if min_mn > max_mn: min_mn = max_mn
+    mutated_mn = _mutate_param(elite_mn.get('components', 20), min_mn, max_mn, delta)
+    musicnn_pca = {"enabled": mutated_mn > 0, "components": mutated_mn}
+
+    # Mutate maest PCA
+    elite_ma = elite_params.get('maest_pca', {'enabled': True, 'components': 60})
+    max_ma = min(pca_ranges['components_max'], X_ma.shape[1], X_ma.shape[0] - 1)
+    min_ma = pca_ranges['components_min']
+    if min_ma > max_ma: min_ma = max_ma
+    mutated_ma = _mutate_param(elite_ma.get('components', 60), min_ma, max_ma, delta)
+    maest_pca = {"enabled": mutated_ma > 0, "components": mutated_ma}
+
+    # Mutate clustering method
+    max_k = X_mn.shape[0]
+    method_params = {}
+
+    if method == 'kmeans':
+        upper_k = min(num_clust_ranges[1], max_k)
+        lower_k = min(num_clust_ranges[0], upper_k)
+        k = _mutate_param(elite_method_cfg['params']['n_clusters'], lower_k, upper_k, delta)
+        method_params = {"n_clusters": k}
+    elif method == 'dbscan':
+        mutated_eps = _mutate_param(elite_method_cfg['params']['eps'], db_ranges['eps_min'], db_ranges['eps_max'], mutation_cfg.get('float_abs_delta', 0.1), is_float=True)
+        mutated_min_samples = _mutate_param(elite_method_cfg['params']['min_samples'], db_ranges['samples_min'], db_ranges['samples_max'], delta)
+        method_params = {"eps": mutated_eps, "min_samples": mutated_min_samples}
+    elif method == 'gmm':
+        upper_k = min(gmm_ranges['n_components_max'], max_k)
+        lower_k = min(gmm_ranges['n_components_min'], upper_k)
+        n_comp = _mutate_param(elite_method_cfg['params']['n_components'], lower_k, upper_k, delta)
+        method_params = {"n_components": n_comp}
+    elif method == 'spectral':
+        upper_k = min(spec_ranges['n_clusters_max'], max_k - 1)
+        lower_k = spec_ranges['n_clusters_min']
+        if lower_k < 2: lower_k = 2
+        if upper_k < lower_k: upper_k = lower_k
+        n_clust = _mutate_param(elite_method_cfg['params']['n_clusters'], lower_k, upper_k, delta)
+        elite_random_state = elite_method_cfg['params'].get("random_state", random.randint(0, 10000))
+        mutated_random_state = _mutate_param(elite_random_state, 0, 10000, mutation_cfg.get("int_abs_delta", 100))
+        method_params = {"n_clusters": n_clust, "random_state": mutated_random_state}
+
+    return {
+        "musicnn_pca": musicnn_pca,
+        "maest_pca": maest_pca,
+        "pca_config": {"enabled": False, "components": 0},
+        "clustering_method_config": {"method": method, "params": method_params},
+        "clustering_mode": "dual_consensus",
+    }
 
 # --- Step 3 & 4: Apply Models ---
 
