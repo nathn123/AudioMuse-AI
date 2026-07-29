@@ -90,6 +90,7 @@ from config import (
     CLUSTERING_MAX_PLAYLIST_SONGS,
     CLUSTERING_CALIBRATION_MAX_TRIES,
     CLUSTERING_EARLY_STOP_BATCHES,
+    AUTO_CALIBRATE_LN_STATS,
     TASK_STATUS_STARTED,
     TASK_STATUS_PROGRESS,
     TASK_STATUS_SUCCESS,
@@ -129,6 +130,7 @@ from .clustering_helper import (
     _shuffle_playlist_songs,
     _assign_playlist_chunks,
     _try_ai_name_playlist,
+    _calibrate_ln_stats,
 )
 from .clustering_postprocessing import (
     apply_duplicate_filtering_to_clustering_result,
@@ -235,6 +237,11 @@ def run_clustering_batch_task(
     top_n_playlists_param=None,
     min_clustering_top_param=None,
     top_n_clustering_playlist_param=None,
+    clustering_mode_param="musicnn",
+    hybrid_weight_musicnn_param=0.3,
+    hybrid_weight_maest_param=0.7,
+    hybrid_pca_musicnn_param=20,
+    hybrid_pca_maest_param=40,
 ):
     from flask_app import app
 
@@ -354,6 +361,9 @@ def run_clustering_batch_task(
                     mutation_config=mutation_config,
                     score_weights=score_weights_dict,
                     enable_clustering_embeddings=enable_clustering_embeddings_param,
+                    clustering_mode=clustering_mode_param,
+                    hybrid_pca_musicnn=hybrid_pca_musicnn_param,
+                    hybrid_pca_maest=hybrid_pca_maest_param,
                 )
                 iterations_completed += 1
 
@@ -451,6 +461,7 @@ def run_clustering_task(
     auto_calibration_param=None,
     min_clustering_top_param=None,
     top_n_clustering_playlist_param=None,
+    clustering_mode_param="musicnn",
 ):
     from flask_app import app
 
@@ -666,6 +677,7 @@ def run_clustering_task(
                         top_n_clustering_playlist_param,
                         enable_clustering_embeddings_param,
                         auto_calibration_param,
+                        clustering_mode_param,
                     )
                 except Exception as exc:
                     logger.exception(
@@ -988,6 +1000,7 @@ def _cluster_one_server(
     top_n_clustering_playlist_param,
     enable_clustering_embeddings_param,
     auto_calibration_param,
+    clustering_mode_param="musicnn",
 ):
     server_name = target_server['name'] if target_server else 'default server'
     report("Fetching lightweight track data for stratification...", 1)
@@ -1103,6 +1116,33 @@ def _cluster_one_server(
         min_songs_per_genre_for_stratification_param,
     )
     report(f"Target songs per genre for stratification: {target_songs_per_genre}", 3)
+
+    # ─── LN Stats Auto-Calibration ──────────────────────────────────────
+    if AUTO_CALIBRATE_LN_STATS:
+        report("Calibrating LN stats...", 3.5)
+        cal_result = _calibrate_ln_stats(clustering_mode=clustering_mode_param)
+        if cal_result is not None:
+            div_stats, pur_stats = cal_result
+            import tasks.clustering_helper as ch
+            if clustering_mode_param == 'maest':
+                ch.LN_MAEST_GENRE_DIVERSITY_STATS.update(div_stats)
+                ch.LN_MAEST_GENRE_PURITY_STATS.update(pur_stats)
+            elif clustering_mode_param == 'hybrid_blend':
+                ch.LN_HYBRID_MOOD_DIVERSITY_STATS.update(div_stats)
+                ch.LN_HYBRID_MOOD_PURITY_STATS.update(pur_stats)
+            else:
+                ch.LN_MOOD_DIVERSITY_STATS.update(div_stats)
+                ch.LN_MOOD_PURITY_STATS.update(pur_stats)
+            report(
+                f"LN stats calibrated for mode '{clustering_mode_param}': "
+                f"div_mean={div_stats['mean']:.2f}, pur_mean={pur_stats['mean']:.2f}",
+                3.5,
+            )
+        else:
+            logger.warning(
+                f"LN stats calibration returned no data for mode "
+                f"'{clustering_mode_param}'. Using defaults."
+            )
 
     num_total_batches = (
         (num_clustering_runs + ITERATIONS_PER_BATCH_JOB - 1) // ITERATIONS_PER_BATCH_JOB
@@ -1220,6 +1260,11 @@ def _cluster_one_server(
                 score_weight_other_feature_purity_param,
                 top_n_moods_for_clustering_param,
                 enable_clustering_embeddings_param,
+                clustering_mode_param,
+                hybrid_weight_musicnn_param,
+                hybrid_weight_maest_param,
+                hybrid_pca_musicnn_param,
+                hybrid_pca_maest_param,
             )
             next_batch_to_launch += 1
 
@@ -1595,6 +1640,11 @@ def _launch_batch_job(
         score_weight_other_feature_purity,
         top_n_moods,
         enable_embeddings,
+        clustering_mode,
+        hybrid_weight_musicnn,
+        hybrid_weight_maest,
+        hybrid_pca_musicnn,
+        hybrid_pca_maest,
     ) = args
 
     batch_job_id = f"{state_dict.get('job_prefix') or parent_task_id}_batch_{batch_idx}"
@@ -1666,6 +1716,11 @@ def _launch_batch_job(
         "initial_subset_track_ids_json": json.dumps(state_dict["last_subset_ids"]),
         "enable_clustering_embeddings_param": enable_embeddings,
         "top_n_playlists_param": batch_top_n,
+        "clustering_mode_param": clustering_mode,
+        "hybrid_weight_musicnn_param": hybrid_weight_musicnn,
+        "hybrid_weight_maest_param": hybrid_weight_maest,
+        "hybrid_pca_musicnn_param": hybrid_pca_musicnn,
+        "hybrid_pca_maest_param": hybrid_pca_maest,
     }
 
     new_job = rq_queue_default.enqueue(
