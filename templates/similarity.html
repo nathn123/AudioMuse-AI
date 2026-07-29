@@ -150,6 +150,20 @@
                 <label for="mood_similarity">Filter by mood similarity (danceability, energy, etc.)</label>
             </div>-->
         </div>
+
+        {% if dual_index_available %}
+        <div class="param-group" id="fusion-weight-group">
+            <h4>Model Fusion Weight:</h4>
+            <div>
+                <label for="mood_weight_slider">MusiCNN mood: <span id="mood-weight-label">100%</span></label>
+                <input type="range" id="mood_weight_slider" class="weight-slider" min="0" max="100" value="100">
+            </div>
+            <div>
+                <span style="font-size:0.85rem;color:var(--text-muted);">← MAEST genre</span>
+                <span style="font-size:0.85rem;color:var(--text-muted);float:right;">MusiCNN mood →</span>
+            </div>
+        </div>
+        {% endif %}
         <button type="submit" class="btn btn-primary btn-block">
             Find Similar Tracks
         </button>
@@ -188,6 +202,14 @@
         let _currentMode = 'song';
 
         (() => {
+            // Fusion weight slider label sync (once at load)
+            const fwSlider = document.getElementById('mood_weight_slider');
+            if (fwSlider) {
+                fwSlider.addEventListener('input', function() {
+                    document.getElementById('mood-weight-label').textContent = this.value + '%';
+                });
+            }
+
             let currentTrackIds = [];
             let currentTracks = [];
             let searchTimeout;
@@ -555,6 +577,11 @@
                         radius_similarity: radiusSimilarity,
                         album: albumValue
                     });
+                    // Append fusion weight slider value if present
+                    const fwSlider = document.getElementById('mood_weight_slider');
+                    if (fwSlider) {
+                        params.append('mood_weight', (fwSlider.value / 100).toFixed(2));
+                    }
                     playlistLabel = (document.getElementById('selected_item_title') && document.getElementById('selected_item_title').value) ? document.getElementById('selected_item_title').value : 'Unknown';
                 }
 

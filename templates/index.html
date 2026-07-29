@@ -124,25 +124,52 @@
                         </label>
                         <input type="number" id="config-max_songs_per_cluster">
                     </div>
-                    <div class="advanced-param hidden">
-                        <label for="config-pca_components_min" class="label-with-tooltip">
-                            PCA Components Min:
-                            <span class="info-tooltip" tabindex="0">
-                                <span class="info-icon"></span>
-                                <span class="tooltip-text">Principal Component Analysis simplifies song data. Minimum number of components to use (0 to disable PCA). Lower = faster but less accurate. Advanced users only.</span>
-                            </span>
-                        </label>
-                        <input type="number" id="config-pca_components_min">
+                    <!-- PCA: Single Mode Range (shown for musicnn/maest) -->
+                    <div id="pca-single-mode" class="advanced-param hidden">
+                        <div>
+                            <label for="config-pca_components_min" class="label-with-tooltip">
+                                PCA Components Min:
+                                <span class="info-tooltip" tabindex="0">
+                                    <span class="info-icon"></span>
+                                    <span class="tooltip-text" id="pca-single-tooltip-min">Minimum PCA components for single-model clustering. Set to 0 to disable PCA entirely.</span>
+                                </span>
+                            </label>
+                            <input type="number" id="config-pca_components_min">
+                        </div>
+                        <div>
+                            <label for="config-pca_components_max" class="label-with-tooltip">
+                                PCA Components Max:
+                                <span class="info-tooltip" tabindex="0">
+                                    <span class="info-icon"></span>
+                                    <span class="tooltip-text" id="pca-single-tooltip-max">Maximum PCA components. Higher = more detail retained but slower. Capped by feature dimension.</span>
+                                </span>
+                            </label>
+                            <input type="number" id="config-pca_components_max">
+                        </div>
                     </div>
-                    <div class="advanced-param hidden">
-                        <label for="config-pca_components_max" class="label-with-tooltip">
-                            PCA Components Max:
-                            <span class="info-tooltip" tabindex="0">
-                                <span class="info-icon"></span>
-                                <span class="tooltip-text">Maximum number of PCA components. Higher = more detailed analysis but slower. For embeddings: try 50-199. For feature vectors: try 8-20.</span>
-                            </span>
-                        </label>
-                        <input type="number" id="config-pca_components_max">
+                    <!-- PCA: Dual Mode Per-Stream (shown for hybrid_blend/dual_consensus) -->
+                    <div id="pca-dual-mode" class="advanced-param hidden">
+                        <h4>Per-Stream PCA Dimensions (fixed):</h4>
+                        <div>
+                            <label for="config-hybrid_pca_musicnn" class="label-with-tooltip">
+                                MusiCNN PCA dims:
+                                <span class="info-tooltip" tabindex="0">
+                                    <span class="info-icon"></span>
+                                    <span class="tooltip-text">PCA components for MusiCNN feature vector (58-dim). Higher = more mood variance retained. Default: 20. Not evolutionary — fixed per-run.</span>
+                                </span>
+                            </label>
+                            <input type="number" id="config-hybrid_pca_musicnn" min="1" max="58">
+                        </div>
+                        <div>
+                            <label for="config-hybrid_pca_maest" class="label-with-tooltip">
+                                MAEST PCA dims:
+                                <span class="info-tooltip" tabindex="0">
+                                    <span class="info-icon"></span>
+                                    <span class="tooltip-text">PCA components for MAEST feature vector (469-dim). Higher = more genre variance retained. Default: 40. Not evolutionary — fixed per-run.</span>
+                                </span>
+                            </label>
+                            <input type="number" id="config-hybrid_pca_maest" min="1" max="469">
+                        </div>
                     </div>
                     <div class="advanced-param hidden">
                         <label for="config-min_songs_per_genre_for_stratification" class="label-with-tooltip">
