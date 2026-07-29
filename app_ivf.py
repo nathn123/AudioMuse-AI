@@ -41,6 +41,8 @@ from tasks.ivf_manager import (
     get_max_distance_for_id,
     search_tracks_unified,
     get_item_id_by_title_and_artist,
+    find_nearest_neighbors_fused,
+    _both_indexes_loaded,
 )
 
 logger = logging.getLogger(__name__)
@@ -164,7 +166,8 @@ def similarity_page():
               type: string
     """
     return render_template(
-        'similarity.html', title='AudioMuse-AI - Playlist from Similar Song', active='similarity'
+        'similarity.html', title='AudioMuse-AI - Playlist from Similar Song', active='similarity',
+        dual_index_available=_both_indexes_loaded()
     )
 
 
@@ -421,6 +424,9 @@ def get_similar_tracks_endpoint():
     else:
         mood_similarity = mood_similarity_str.lower() == 'true'
 
+    # Optional fusion weight — overrides server default when provided
+    mood_weight = request.args.get('mood_weight', None, type=float)
+
     # Validate the optional 'server' selection up front so an unknown or
     # disabled server answers 400 instead of surfacing later as a 500.
     try:
@@ -503,13 +509,23 @@ def get_similar_tracks_endpoint():
         ), 400
 
     try:
-        neighbor_results = find_nearest_neighbors_by_id(
-            target_item_id,
-            n=num_neighbors,
-            eliminate_duplicates=eliminate_duplicates,
-            mood_similarity=mood_similarity,
-            radius_similarity=radius_similarity,
-        )
+        if _both_indexes_loaded() and mood_weight is not None and mood_weight < 1.0:
+            neighbor_results = find_nearest_neighbors_fused(
+                target_item_id,
+                n=num_neighbors,
+                eliminate_duplicates=eliminate_duplicates,
+                mood_similarity=mood_similarity,
+                radius_similarity=radius_similarity,
+                mood_weight=mood_weight,
+            )
+        else:
+            neighbor_results = find_nearest_neighbors_by_id(
+                target_item_id,
+                n=num_neighbors,
+                eliminate_duplicates=eliminate_duplicates,
+                mood_similarity=mood_similarity,
+                radius_similarity=radius_similarity,
+            )
         if not neighbor_results:
             return jsonify(
                 {"error": "Target track not found in index or no similar tracks found."}

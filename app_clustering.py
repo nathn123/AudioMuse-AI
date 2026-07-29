@@ -66,6 +66,11 @@ from config import (
     MISTRAL_MODEL_NAME,
     TASK_STATUS_PENDING,
     TASK_STATUS_FAILURE,
+    CLUSTERING_MODE,
+    HYBRID_WEIGHT_MUSICNN,
+    HYBRID_WEIGHT_MAEST,
+    HYBRID_PCA_MUSICNN,
+    HYBRID_PCA_MAEST,
 )
 
 # RQ import
@@ -420,6 +425,11 @@ def start_clustering_endpoint():
         "enable_clustering_embeddings_param": data.get(
             'enable_clustering_embeddings', ENABLE_CLUSTERING_EMBEDDINGS
         ),
+        "clustering_mode_param": data.get('clustering_mode', CLUSTERING_MODE),
+        "hybrid_weight_musicnn_param": float(data.get('hybrid_weight_musicnn', HYBRID_WEIGHT_MUSICNN)),
+        "hybrid_weight_maest_param": float(data.get('hybrid_weight_maest', HYBRID_WEIGHT_MAEST)),
+        "hybrid_pca_musicnn_param": int(data.get('hybrid_pca_musicnn', HYBRID_PCA_MUSICNN)),
+        "hybrid_pca_maest_param": int(data.get('hybrid_pca_maest', HYBRID_PCA_MAEST)),
     }
 
     # Clean up details of previously successful or stale tasks before starting a new one

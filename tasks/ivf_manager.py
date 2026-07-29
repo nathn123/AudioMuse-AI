@@ -54,6 +54,8 @@ from config import (
     RADIUS_INSTRUMENTATION,
     IVF_RERANK_OVERFETCH,
     IVF_LAZY_LOAD_RETRY_SECONDS,
+    INDEX_NAME_MAEST,
+    FUSION_WEIGHT_MUSICNN_DEFAULT,
 )
 
 logger = logging.getLogger(__name__)
@@ -63,6 +65,19 @@ INSTRUMENT_BUCKET_SKIPS = RADIUS_INSTRUMENTATION
 ivf_index = None
 id_map = None
 reverse_id_map = None
+
+# MAEST index globals — parallel to the above but for the MAEST embedding space
+ivf_index_maest = None
+id_map_maest = None
+reverse_id_map_maest = None
+
+
+def _both_indexes_loaded():
+    """True when both musicnn and MAEST indexes are available in memory."""
+    return (
+        ivf_index is not None and id_map is not None
+        and ivf_index_maest is not None and id_map_maest is not None
+    )
 
 
 class _ResultCache:
@@ -1417,8 +1432,227 @@ def create_playlist_from_ids(playlist_name: str, track_ids: list, user_creds: di
 
         return playlist_id
 
+
+def build_and_store_maest_ivf_index(db_conn=None):
+    """Build the disk-paged IVF index from the MAEST embedding table.
+
+    Parallel to build_and_store_ivf_index() but reads from maest_embedding
+    with 768-dim vectors and stores under INDEX_NAME_MAEST.
+    """
+    if db_conn is None:
+        try:
+            from app_helper import get_db
+            db_conn = get_db()
+        except Exception:
+            logger.error("build_and_store_maest_ivf_index: no db_conn provided and get_db() failed.")
+            return
+
+    from .index_build_helpers import stream_embeddings_to_buffer
+    from .paged_ivf import build_and_store_paged_ivf
+    maest_dim = int(os.environ.get("MAEST_EMBEDDING_DIMENSION", "768"))
+    logger.info("Starting to build and store MAEST IVF index (disk-paged)...")
+    try:
+        buf, item_ids = stream_embeddings_to_buffer(
+            table="maest_embedding", column="embedding", dim=maest_dim,
+            where_clause="embedding IS NOT NULL",
+        )
+        if buf.shape[0] == 0:
+            logger.warning("No valid MAEST embeddings found for IVF index build. Aborting.")
+            return
+        if build_and_store_paged_ivf(db_conn, INDEX_NAME_MAEST, buf, item_ids, maest_dim, IVF_METRIC):
+            db_conn.commit()
+            logger.info("MAEST IVF index build and database storage complete.")
     except Exception as e:
-        raise e
+        logger.error("An error occurred during MAEST IVF index build: %s", e, exc_info=True)
+        try:
+            db_conn.rollback()
+        except Exception:
+            pass
+
+
+def load_maest_ivf_index(force_reload=False):
+    """Load the MAEST disk-paged IVF index into the global in-memory cache.
+
+    Parallel to load_ivf_index_for_querying but for the MAEST index.
+    """
+    global ivf_index_maest, id_map_maest, reverse_id_map_maest
+
+    if ivf_index_maest is not None and not force_reload:
+        return
+
+    from app_helper import get_db
+    from .paged_ivf import load_paged_ivf_index
+    maest_dim = int(os.environ.get("MAEST_EMBEDDING_DIMENSION", "768"))
+    conn = get_db()
+    logger.info("Loading MAEST IVF index from database into memory...")
+    try:
+        loaded = load_paged_ivf_index(conn, INDEX_NAME_MAEST, maest_dim, IVF_METRIC, label="maest")
+    except Exception as e:
+        logger.error("Failed to load MAEST IVF index: %s", e, exc_info=True)
+        ivf_index_maest, id_map_maest, reverse_id_map_maest = None, None, None
+        return
+    if loaded is None:
+        logger.warning("MAEST IVF index not found in the database.")
+        ivf_index_maest, id_map_maest, reverse_id_map_maest = None, None, None
+        return
+    ivf_index_maest, id_map_maest, reverse_id_map_maest = loaded
+    logger.info("MAEST IVF index with %d items loaded successfully into memory.", len(id_map_maest))
+
+
+def find_nearest_neighbors_fused(
+    target_item_id: str,
+    n: int = 10,
+    mood_weight: float | None = None,
+    eliminate_duplicates: bool | None = None,
+    mood_similarity: bool | None = None,
+    radius_similarity: bool | None = None,
+):
+    """Query both IVF indexes and fuse results by weighted distance.
+
+    When both indexes are loaded, this returns a fusion of MusiCNN mood
+    similarity and MAEST genre similarity. The fusion is controlled by
+    ``mood_weight``:
+
+      1.0  = pure MusiCNN (default)
+      0.0  = pure MAEST
+      0.6  = 60% MusiCNN + 40% MAEST
+
+    Parameters
+    ----------
+    mood_weight : float or None
+        Override. None -> use FUSION_WEIGHT_MUSICNN_DEFAULT from config.
+    """
+    weight_mn = FUSION_WEIGHT_MUSICNN_DEFAULT if mood_weight is None else float(mood_weight)
+    weight_mn = max(0.0, min(1.0, weight_mn))
+
+    # Edge: if fusion is all the way to one side, skip the other index
+    if weight_mn >= 0.999 or ivf_index_maest is None:
+        return find_nearest_neighbors_by_id(
+            target_item_id, n=n,
+            eliminate_duplicates=eliminate_duplicates,
+            mood_similarity=mood_similarity,
+            radius_similarity=radius_similarity,
+        )
+    if weight_mn <= 0.001 or ivf_index is None:
+        return _find_nearest_neighbors_by_maest(target_item_id, n=n)
+
+    # Query both indexes (overfetch by 2x for good fusion coverage)
+    overfetch = max(20, n * 3)
+    try:
+        results_mn = find_nearest_neighbors_by_id(
+            target_item_id, n=overfetch,
+            eliminate_duplicates=False,  # dedup after fusion
+            mood_similarity=False,  # no per-index filters
+            radius_similarity=False,
+        )
+    except Exception:
+        results_mn = []
+
+    try:
+        results_ma = _find_nearest_neighbors_by_maest(target_item_id, n=overfetch)
+    except Exception:
+        results_ma = []
+
+    if not results_mn and not results_ma:
+        return []
+    if not results_mn:
+        return results_ma[:n]
+    if not results_ma:
+        return results_mn[:n]
+
+    # Build fused distance map
+    fused = {}
+    for r in results_mn:
+        fused[r['item_id']] = {'dist_mn': r.get('distance', 1.0), 'dist_ma': 1.0, 'row': r}
+    for r in results_ma:
+        item_id = r['item_id']
+        if item_id in fused:
+            fused[item_id]['dist_ma'] = r.get('distance', 1.0)
+        else:
+            fused[item_id] = {'dist_mn': 1.0, 'dist_ma': r.get('distance', 1.0), 'row': r}
+
+    weight_ma = 1.0 - weight_mn
+    scored = []
+    for item_id, data in fused.items():
+        fused_dist = weight_mn * data['dist_mn'] + weight_ma * data['dist_ma']
+        scored.append((fused_dist, data['row']))
+
+    scored.sort(key=lambda x: x[0])
+
+    # Deduplicate if requested
+    if eliminate_duplicates is None:
+        eliminate_duplicates = SIMILARITY_ELIMINATE_DUPLICATES_DEFAULT
+    if eliminate_duplicates:
+        seen_artists = {}
+        filtered = []
+        for dist, row in scored:
+            artist = row.get('author', '').strip().lower()
+            if artist in seen_artists and seen_artists[artist] >= MAX_SONGS_PER_ARTIST:
+                continue
+            seen_artists[artist] = seen_artists.get(artist, 0) + 1
+            row['distance'] = dist
+            filtered.append(row)
+            if len(filtered) >= n:
+                break
+        return filtered
+
+    for dist, row in scored[:n]:
+        row['distance'] = dist
+    return [row for _, row in scored[:n]]
+
+
+def _find_nearest_neighbors_by_maest(target_item_id: str, n: int = 10):
+    """Query the MAEST IVF index by item_id.
+
+    Simplified path - no radius walk, mood filtering, or dedup (those are
+    handled at the fusion layer). Returns raw neighbor list.
+    """
+    if ivf_index_maest is None or id_map_maest is None or reverse_id_map_maest is None:
+        raise RuntimeError("MAEST IVF index is not loaded in memory.")
+
+    target_vec_id = reverse_id_map_maest.get(target_item_id)
+    if target_vec_id is None:
+        return []
+
+    ivf_index_maest.begin_request()
+
+    from app_helper import get_db
+    db_conn = get_db()
+
+    # Fetch exact float32 embedding from maest_embedding table
+    anchor_f32 = None
+    try:
+        with db_conn.cursor() as cur:
+            cur.execute(
+                "SELECT embedding FROM maest_embedding WHERE item_id = %s AND embedding IS NOT NULL",
+                (str(target_item_id),),
+            )
+            row = cur.fetchone()
+            if row:
+                v = np.frombuffer(bytes(row[0]), dtype=np.float32)
+                if v.shape[0] == int(os.environ.get("MAEST_EMBEDDING_DIMENSION", "768")):
+                    anchor_f32 = v
+    except Exception:
+        pass
+
+    query_vector = anchor_f32 if anchor_f32 is not None else ivf_index_maest.get_vector(target_vec_id)
+    if query_vector is None:
+        return []
+
+    overfetch = max(20, n * 3)
+    try:
+        vec_ids, distances = ivf_index_maest.query(query_vector, k=overfetch)
+    except Exception as e:
+        logger.error(f"MAEST IVF query failed for {target_item_id}: {e}")
+        return []
+
+    results = []
+    for vid, dist in zip(vec_ids, distances):
+        item_id = id_map_maest.get(vid)
+        if item_id is not None and item_id != target_item_id:
+            results.append({'item_id': item_id, 'distance': float(dist)})
+
+    return results[:n]
 
 
 def cleanup_resources():
