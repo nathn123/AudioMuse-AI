@@ -859,7 +859,17 @@ LYRICS_GTE_WARMUP_DURATION = int(os.environ.get("LYRICS_GTE_WARMUP_DURATION", "3
 
 # --- IVF Index Constants ---
 INDEX_NAME = os.environ.get("IVF_INDEX_NAME", "music_library")  # The primary key for our index in the DB
+# IVF metric used by the index (applies to both musicnn and maest indexes)
 IVF_METRIC = os.environ.get("IVF_METRIC", "angular")  # Options: 'angular' (Cosine), 'euclidean', 'dot' (InnerProduct)
+
+# MAEST IVF index name — only built when ANALYSIS_MODE=both or ANALYSIS_MODE=maest
+INDEX_NAME_MAEST = os.environ.get("IVF_INDEX_NAME_MAEST", "maest_library")
+
+# Fusion weight for dual-index similarity search.
+# 1.0 = pure MusiCNN, 0.0 = pure MAEST. When both indexes are loaded and this
+# is not 1.0, /api/similar_tracks returns fused results by default.
+# Callers can override per-query via ?mood_weight=.
+FUSION_WEIGHT_MUSICNN_DEFAULT = float(os.environ.get("FUSION_WEIGHT_MUSICNN_DEFAULT", "1.0"))
 IVF_QUERY_EF = int(os.environ.get("IVF_QUERY_EF", "1024"))
 
 # --- Disk-Paged IVF Index Constants ---

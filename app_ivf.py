@@ -10,11 +10,13 @@ from config import SIMILARITY_ELIMINATE_DUPLICATES_DEFAULT, SIMILARITY_RADIUS_DE
 from app_helper import serialize_neighbor_results
 from tasks.ivf_manager import (
     find_nearest_neighbors_by_id, 
+    find_nearest_neighbors_fused,
     find_nearest_neighbors_by_vector,
     get_max_distance_for_id,
     create_playlist_from_ids,
     search_tracks_unified,
-    get_item_id_by_title_and_artist
+    get_item_id_by_title_and_artist,
+    _both_indexes_loaded,
 )
 
 logger = logging.getLogger(__name__)
@@ -111,7 +113,8 @@ def similarity_page():
             schema:
               type: string
     """
-    return render_template('similarity.html', title = 'AudioMuse-AI - Playlist from Similar Song', active='similarity')
+    return render_template('similarity.html', title='AudioMuse-AI - Playlist from Similar Song', active='similarity',
+                           dual_index_available=_both_indexes_loaded())
 
 @ivf_bp.route('/api/search_tracks', methods=['GET'])
 def search_tracks_endpoint():
@@ -347,6 +350,9 @@ def get_similar_tracks_endpoint():
     else:
         mood_similarity = mood_similarity_str.lower() == 'true'
 
+    # Optional fusion weight — overrides server default when provided
+    mood_weight = request.args.get('mood_weight', None, type=float)
+
     # --- Mood centroid mode: use centroid vector instead of a song ---
     if mood_param and centroid_index_param is not None:
         _ensure_mood_centroids_loaded()
@@ -393,13 +399,25 @@ def get_similar_tracks_endpoint():
         return jsonify({"error": "Request must include either 'item_id' or both 'title' and 'artist', or 'mood' and 'centroid_index'."}), 400
 
     try:
-        neighbor_results = find_nearest_neighbors_by_id(
-            target_item_id, 
-            n=num_neighbors,
-            eliminate_duplicates=eliminate_duplicates,
-            mood_similarity=mood_similarity,
-            radius_similarity=radius_similarity
-        )
+        # Route to fused query when both indexes are available and the
+        # caller hasn't explicitly opted out (mood_weight overrides config)
+        if _both_indexes_loaded():
+            neighbor_results = find_nearest_neighbors_fused(
+                target_item_id,
+                n=num_neighbors,
+                mood_weight=mood_weight,
+                eliminate_duplicates=eliminate_duplicates,
+                mood_similarity=mood_similarity,
+                radius_similarity=radius_similarity,
+            )
+        else:
+            neighbor_results = find_nearest_neighbors_by_id(
+                target_item_id, 
+                n=num_neighbors,
+                eliminate_duplicates=eliminate_duplicates,
+                mood_similarity=mood_similarity,
+                radius_similarity=radius_similarity
+            )
         if not neighbor_results:
             return jsonify({"error": "Target track not found in index or no similar tracks found."}), 404
 
