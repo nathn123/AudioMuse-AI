@@ -322,8 +322,9 @@
                         <select id="EMBEDDER_TYPE" name="EMBEDDER_TYPE">
                             <option value="musicnn">MusiCNN (200-dim, 50 mood labels)</option>
                             <option value="maest">MAEST (1280-dim, 21 genre tags)</option>
+                            <option value="both">Both — MusiCNN + MAEST</option>
                         </select>
-                        <small style="margin-top:0.25rem; display:block; opacity:0.8;">⚠️ Requires MAEST ONNX model in /app/model/. Changing this requires full re-analysis.</small>
+                        <small style="margin-top:0.25rem; display:block; opacity:0.8;">⚠️ Requires MAEST ONNX model in /app/model/. "Both" runs both models per track.</small>
                     </div>
                 </div>
             </details>

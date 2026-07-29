@@ -639,8 +639,8 @@ def get_config_endpoint():
 def set_embedder_endpoint():
     data = request.get_json(force=True)
     new_type = data.get('embedder_type', '').lower().strip()
-    if new_type not in ('musicnn', 'maest'):
-        return jsonify({'ok': False, 'error': f"Invalid embedder_type '{new_type}'. Must be 'musicnn' or 'maest'."}), 400
+    if new_type not in ('musicnn', 'maest', 'both'):
+        return jsonify({'ok': False, 'error': f"Invalid embedder_type '{new_type}'. Must be 'musicnn', 'maest', or 'both'."}), 400
 
     from app_helper import save_app_config_key
     ok = save_app_config_key('EMBEDDER_TYPE', new_type)
@@ -648,8 +648,9 @@ def set_embedder_endpoint():
         return jsonify({'ok': False, 'error': 'Failed to persist embedder type to app_config.'}), 500
 
     config.EMBEDDER_TYPE = new_type
-    config.EMBEDDING_DIMENSION = config._compute_embedding_dim() if hasattr(config, '_compute_embedding_dim') else int(os.environ.get('MAEST_EMBEDDING_DIMENSION', '1280') if new_type == 'maest' else '200')
-    config.MOOD_LABELS_RESOLVED = config.MAEST_MOOD_LABELS if new_type == 'maest' else config.MOOD_LABELS
+    config.ANALYSIS_MODE = new_type  # Keep alias in sync
+    config.EMBEDDING_DIMENSION = config._compute_embedding_dim()
+    config.MOOD_LABELS_RESOLVED = config.MAEST_MOOD_LABELS if new_type in ('maest', 'both') else config.MOOD_LABELS
 
     logger.info(f"Embedder type switched to '{new_type}' (dim={config.EMBEDDING_DIMENSION})")
     return jsonify({'ok': True, 'embedder_type': new_type})

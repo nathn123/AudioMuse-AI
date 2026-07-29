@@ -36,18 +36,23 @@ def dashboard_page():
     """
     import config
     
-    # ─── NEW: Pass configured models instead of single embedder type ──────────────────────────────────────
-    models_enabled = getattr(config, 'ANALYSIS_MODELS_ENABLED', ['musicnn'])
-    embedder_type = ', '.join(models_enabled).upper()  # e.g. "MUSICNN" or "MUSICNN, MAEST"
-    
+    # ─── NEW: Pass configured mode instead of single embedder type ──────────────────────────────────────
+    analysis_mode = getattr(config, 'ANALYSIS_MODE', 'musicnn')
+    # Format for display: "MUSICNN" or "MUSICNN + MAEST" or "MAEST"
+    embedder_type_display = {
+        'musicnn': 'MUSICNN',
+        'maest': 'MAEST',
+        'both': 'MUSICNN + MAEST',
+    }.get(analysis_mode, 'MUSICNN')
+
     return render_template(
         'dashboard.html',
         title='AudioMuse-AI - Dashboard',
         active='dashboard',
-        embedder_type=embedder_type,
+        embedder_type=embedder_type_display,
         embedding_dim=config.EMBEDDING_DIMENSION,
         mood_labels_count=len(config.MOOD_LABELS_RESOLVED),
-        models_enabled=models_enabled,  # Pass list for conditional UI logic
+        models_enabled=analysis_mode,  # Pass mode string for conditional UI logic
     )
 
 
@@ -181,8 +186,8 @@ def _collect_content_metrics(cur, models=None):
     """Collect content metrics. If models is None, use config defaults."""
     import config
     if models is None:
-        models = getattr(config, 'ANALYSIS_MODELS_ENABLED', ['musicnn'])
-    
+        models = getattr(config, 'ANALYSIS_MODE', 'musicnn')
+
     # Initialize metrics dict
     metrics = {
         'total_songs': _safe_count(cur, "SELECT COUNT(*) FROM score"),
@@ -191,18 +196,18 @@ def _collect_content_metrics(cur, models=None):
         'musicnn_indexed': _get_musicnn_index_count(),
         'clap_indexed': _get_clap_index_count(),
         'gmm_indexed': _get_gmm_index_count(),
-        # ─── NEW: Per-model indexed counts ──────────────────────────────────────
+        # ─── Per-model indexed counts ──────────────────────────────────────
         'musicnn_mood_count': 0,
         'maest_mood_count': 0,
     }
 
-    # ─── NEW: Count songs with mood vectors per model ──────────────────────────────────────
-    if 'musicnn' in models:
+    # Count songs with mood vectors per model
+    if models in ('musicnn', 'both'):
         metrics['musicnn_mood_count'] = _safe_count(
             cur, "SELECT COUNT(*) FROM score WHERE mood_vector IS NOT NULL AND mood_vector <> ''"
         )
-    
-    if 'maest' in models:
+
+    if models in ('maest', 'both'):
         metrics['maest_mood_count'] = _safe_count(
             cur, "SELECT COUNT(*) FROM score WHERE maest_mood_vector IS NOT NULL AND maest_mood_vector <> ''"
         )
@@ -424,8 +429,8 @@ def refresh_dashboard_stats(app):
             cur = db.cursor(cursor_factory=DictCursor)
             try:
                 import config
-                # ─── NEW: Pass configured models ──────────────────────────────────────
-                models = getattr(config, 'ANALYSIS_MODELS_ENABLED', ['musicnn'])
+                # ─── Pass configured models ──────────────────────────────────────
+                models = getattr(config, 'ANALYSIS_MODE', 'musicnn')
                 content = _collect_content_metrics(cur, models=models)
             finally:
                 cur.close()

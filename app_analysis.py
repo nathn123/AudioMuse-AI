@@ -4,7 +4,7 @@ import uuid
 import logging
 
 # Import configuration from the main config.py
-from config import NUM_RECENT_ALBUMS, TOP_N_MOODS, TASK_STATUS_PENDING, ANALYSIS_MODELS_ENABLED
+from config import NUM_RECENT_ALBUMS, TOP_N_MOODS, TASK_STATUS_PENDING, ANALYSIS_MODE
 
 # RQ import
 from rq import Retry
@@ -104,7 +104,12 @@ def start_analysis_endpoint():
     # ─── NEW: Parse model selection ──────────────────────────────────────
     models_param = data.get('analysis_models')
     if models_param is None:
-        models_enabled = ANALYSIS_MODELS_ENABLED  # Config default
+        # Resolve ANALYSIS_MODE string to a list for downstream consumers
+        raw_mode = ANALYSIS_MODE
+        if raw_mode == 'both':
+            models_enabled = ['musicnn', 'maest']
+        else:
+            models_enabled = [raw_mode]
     elif models_param == 'both':
         models_enabled = ['musicnn', 'maest']
     elif models_param == 'maest':

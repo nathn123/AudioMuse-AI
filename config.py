@@ -208,7 +208,10 @@ AUDIO_LOAD_TIMEOUT = int(os.getenv("AUDIO_LOAD_TIMEOUT", "600")) # Timeout in se
 ANALYSIS_MONITOR_DB_INTERVAL = int(os.environ.get("ANALYSIS_MONITOR_DB_INTERVAL", "10")) # Min seconds between DB child-status reconciliations in the analysis monitor (0 = every poll; active jobs drain via RQ every poll regardless).
 
 # ─── Dual Model Analysis Settings ──────────────────────────────────────
-ANALYSIS_MODELS_ENABLED = ['musicnn']  # Options: ['musicnn'], ['maest'], ['musicnn', 'maest'] Default is MusicNN only for backward compatibility
+# Valid values: "musicnn" (default), "maest", or "both"
+ANALYSIS_MODE = os.environ.get("ANALYSIS_MODE", "musicnn").lower()
+# Backward-compat alias — old code references EMBEDDER_TYPE everywhere
+EMBEDDER_TYPE = ANALYSIS_MODE
 
 # ─── ONNX Session Management ─────────────────────────────────────────
 SEQUENTIAL_ANALYSIS = os.environ.get("SEQUENTIAL_ANALYSIS", "True").lower() == "true"
@@ -406,9 +409,9 @@ MAEST_INPUT_NAME = os.environ.get("MAEST_INPUT_NAME", "melspectrogram")
 # Comma-separated output names: logits first, embedding second
 MAEST_OUTPUT_NAMES = os.environ.get("MAEST_OUTPUT_NAMES", "logits,layer_07_embeddings")
 
-# Dimension is dynamic based on the embedder
+# Dimension is dynamic based on the analysis mode
 def _compute_embedding_dim():
-    if EMBEDDER_TYPE == "maest":
+    if ANALYSIS_MODE in ("maest", "both"):
         return int(os.environ.get("MAEST_EMBEDDING_DIMENSION", "768"))
     return 200
 
@@ -646,7 +649,7 @@ MAEST_MOOD_LABELS = [
     'Spoken Word---Story', 'Spoken Word---Therapy',
 ]
 
-MOOD_LABELS_RESOLVED = MAEST_MOOD_LABELS if EMBEDDER_TYPE == "maest" else MOOD_LABELS
+MOOD_LABELS_RESOLVED = MAEST_MOOD_LABELS if ANALYSIS_MODE in ("maest", "both") else MOOD_LABELS
 
 # --- CLAP Model Constants (for text search) ---
 CLAP_ENABLED = os.environ.get("CLAP_ENABLED", "true").lower() == "true"
