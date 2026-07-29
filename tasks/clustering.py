@@ -28,6 +28,7 @@ from config import (
     CLUSTERING_MAX_FAILED_BATCHES, CLUSTERING_CLEANING,
     TASK_STATUS_STARTED, TASK_STATUS_PROGRESS,
     TASK_STATUS_SUCCESS, TASK_STATUS_FAILURE, TASK_STATUS_REVOKED,
+    AUTO_CALIBRATE_LN_STATS,
 )
 
 from error import error_manager
@@ -55,6 +56,7 @@ from .clustering_helper import (
     _shuffle_playlist_songs,
     _assign_playlist_chunks,
     _try_ai_name_playlist,
+    _calibrate_ln_stats,
 )
 # Import post-processing functions from dedicated module
 from .clustering_postprocessing import (
@@ -408,6 +410,27 @@ def run_clustering_task(
                 genre_map, stratified_sampling_target_percentile_param, min_songs_per_genre_for_stratification_param
             )
             _log_and_update(f"Target songs per genre for stratification: {target_songs_per_genre}", 5)
+
+            # ─── LN Stats Auto-Calibration ──────────────────────────────────────
+            if AUTO_CALIBRATE_LN_STATS:
+                _log_and_update("Calibrating LN stats...", 6)
+                cal_result = _calibrate_ln_stats(clustering_mode=clustering_mode_param)
+                if cal_result is not None:
+                    div_stats, pur_stats = cal_result
+                    # Patch the mode-specific LN stats in the globals needed by clustering_helper
+                    import tasks.clustering_helper as ch
+                    if clustering_mode_param == 'maest':
+                        ch.LN_MAEST_GENRE_DIVERSITY_STATS.update(div_stats)
+                        ch.LN_MAEST_GENRE_PURITY_STATS.update(pur_stats)
+                    elif clustering_mode_param == 'hybrid_blend':
+                        ch.LN_HYBRID_MOOD_DIVERSITY_STATS.update(div_stats)
+                        ch.LN_HYBRID_MOOD_PURITY_STATS.update(pur_stats)
+                    else:
+                        ch.LN_MOOD_DIVERSITY_STATS.update(div_stats)
+                        ch.LN_MOOD_PURITY_STATS.update(pur_stats)
+                    _log_and_update(f"LN stats calibrated for mode '{clustering_mode_param}': div_mean={div_stats['mean']:.2f}, pur_mean={pur_stats['mean']:.2f}", 7)
+                else:
+                    logger.warning(f"LN stats calibration returned no data for mode '{clustering_mode_param}'. Using defaults.")
 
             # --- 2. Batch Job Orchestration ---
             num_total_batches = (num_clustering_runs + ITERATIONS_PER_BATCH_JOB - 1) // ITERATIONS_PER_BATCH_JOB if ITERATIONS_PER_BATCH_JOB > 0 else 0

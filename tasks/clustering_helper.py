@@ -35,6 +35,8 @@ from config import (STRATIFIED_GENRES, OTHER_FEATURE_LABELS, MOOD_LABELS, MAEST_
                     LN_MOOD_PURITY_STATS, LN_MOOD_DIVERSITY_EMBEDING_STATS,
                     LN_MOOD_PURITY_EMBEDING_STATS, LN_OTHER_FEATURES_DIVERSITY_STATS,
                     LN_OTHER_FEATURES_PURITY_STATS,
+                    LN_MAEST_GENRE_DIVERSITY_STATS, LN_MAEST_GENRE_PURITY_STATS,
+                    LN_HYBRID_MOOD_DIVERSITY_STATS, LN_HYBRID_MOOD_PURITY_STATS,
                     OTHER_FEATURE_PREDOMINANCE_THRESHOLD_FOR_PURITY,
                     USE_GPU_CLUSTERING, TASK_STATUS_SUCCESS,
                     HYBRID_PCA_MUSICNN, HYBRID_PCA_MAEST,
@@ -268,7 +270,8 @@ def _perform_single_clustering_iteration(
         return _format_and_score_iteration_result(
             labels, valid_tracks, X_feat_orig, data_after_pca,
             cluster_centers_map, model, pca_model, scaler, active_mood_labels,
-            params, max_songs_per_cluster, run_idx, enable_clustering_embeddings, score_weights, log_prefix
+            params, max_songs_per_cluster, run_idx, enable_clustering_embeddings, score_weights, log_prefix,
+            clustering_mode=clustering_mode
         )
 
     except Exception as e:
@@ -632,10 +635,147 @@ def _get_feature_centroid_for_embedding_cluster(label_id, labels, X_feat_orig):
 
 # --- Step 5 & 6: Formatting and Scoring ---
 
+# Map of clustering_mode -> LN stats dicts for Z-score normalization
+_LN_STATS_BY_MODE = {
+    'musicnn': {'diversity': LN_MOOD_DIVERSITY_STATS, 'purity': LN_MOOD_PURITY_STATS},
+    'maest':   {'diversity': LN_MAEST_GENRE_DIVERSITY_STATS, 'purity': LN_MAEST_GENRE_PURITY_STATS},
+    'hybrid_blend': {'diversity': LN_HYBRID_MOOD_DIVERSITY_STATS, 'purity': LN_HYBRID_MOOD_PURITY_STATS},
+}
+
+
+def _resolve_ln_stats(use_embeddings, clustering_mode):
+    """Return (diversity_stats, purity_stats) dicts for the given mode.
+
+    Embedding-based clustering uses its own stats regardless of mode.
+    Falls back to musicnn stats when the mode-specific stats are dummy
+    (mean == sd, a sign they haven't been calibrated).
+    """
+    if use_embeddings:
+        return LN_MOOD_DIVERSITY_EMBEDING_STATS, LN_MOOD_PURITY_EMBEDING_STATS
+
+    mode_key = clustering_mode if clustering_mode in _LN_STATS_BY_MODE else 'musicnn'
+    stats = _LN_STATS_BY_MODE[mode_key]
+    div_stats, pur_stats = stats['diversity'], stats['purity']
+
+    # Detect uncalibrated dummy values (mean ≈ sd from copy-paste)
+    if abs(div_stats.get('mean', 0) - div_stats.get('sd', 1)) < 0.01:
+        div_stats = LN_MOOD_DIVERSITY_STATS  # fall back to musicnn
+    if abs(pur_stats.get('mean', 0) - pur_stats.get('sd', 1)) < 0.01:
+        pur_stats = LN_MOOD_PURITY_STATS
+
+    return div_stats, pur_stats
+
+
+def _calibrate_ln_stats(num_samples=2000, num_fast_iterations=20, clustering_mode='musicnn'):
+    """Run fast calibration pass to estimate LN_*_STATS for the given mode.
+
+    Samples tracks, runs a few KMeans clusterings with random parameters,
+    records raw mood diversity and purity distributions, and returns
+    calibrated (diversity_stats, purity_stats) dicts with mean/sd.
+
+    Returns None when there isn't enough data.
+    """
+    import numpy as np
+    from sklearn.cluster import KMeans
+    from sklearn.preprocessing import StandardScaler
+
+    try:
+        # Fetch sample data via score_vector-compatible query
+        from database import get_db
+        from psycopg2.extras import DictCursor
+        conn = get_db()
+        with conn.cursor(cursor_factory=DictCursor) as cur:
+            if clustering_mode == 'maest':
+                cur.execute(
+                    "SELECT item_id, title, author, tempo, key, scale, energy, "
+                    "maest_mood_vector AS mood_vector, other_features, album, album_artist, year, rating, file_path "
+                    "FROM score WHERE maest_mood_vector IS NOT NULL AND maest_mood_vector <> '' LIMIT %s",
+                    (num_samples,)
+                )
+            else:
+                cur.execute(
+                    "SELECT item_id, title, author, tempo, key, scale, energy, "
+                    "mood_vector, other_features, album, album_artist, year, rating, file_path "
+                    "FROM score WHERE mood_vector IS NOT NULL AND mood_vector <> '' LIMIT %s",
+                    (num_samples,)
+                )
+            rows = cur.fetchall()
+
+        # Build feature vectors — query already aliases maest_mood_vector AS mood_vector
+        mood_labels = MAEST_MOOD_LABELS if clustering_mode == 'maest' else MUSICNN_MOOD_LABELS
+        valid_tracks, feat_list = [], []
+        for row_data in (dict(r) for r in rows if r):
+            try:
+                vec = score_vector(row_data, mood_labels, OTHER_FEATURE_LABELS, mood_column='mood_vector')
+                valid_tracks.append(row_data)
+                feat_list.append(vec)
+            except Exception:
+                continue
+
+        if len(valid_tracks) < 200:
+            return None
+
+        X = np.array(feat_list)
+        if len(valid_tracks) > num_samples:
+            idx = np.random.choice(len(valid_tracks), num_samples, replace=False)
+            X = X[idx]
+
+        # Run fast clusterings and record raw scores
+        raw_diversities, raw_purities = [], []
+        scaled = StandardScaler().fit_transform(X)
+        max_k = min(100, len(scaled) // 10)
+
+        for _ in range(num_fast_iterations):
+            k = np.random.randint(max(10, max_k // 2), max_k + 1)
+            km = KMeans(n_clusters=k, n_init=1, max_iter=100, random_state=np.random.randint(10000))
+            labels = km.fit_predict(scaled)
+
+            centroids = {}
+            for cid in set(labels):
+                if cid == -1:
+                    continue
+                mask = labels == cid
+                centroids[cid] = X[mask].mean(axis=0)
+
+            # Diversity: unique predominant moods across all clusters
+            unique_moods = {}
+            for cid, center in centroids.items():
+                mood_scores = {mood_labels[i]: center[2 + i] for i in range(len(mood_labels)) if center[2 + i] > 0.01}
+                if mood_scores:
+                    top_mood = max(mood_scores, key=mood_scores.get)
+                    unique_moods[top_mood] = max(unique_moods.get(top_mood, 0), mood_scores[top_mood])
+
+            raw_diversity = sum(unique_moods.values())
+            raw_diversities.append(raw_diversity)
+
+            # Purity: per-cluster sum of top-mood scores
+            total_purity = 0.0
+            for cid, center in centroids.items():
+                mood_scores = {mood_labels[i]: center[2 + i] for i in range(len(mood_labels)) if center[2 + i] > 0.01}
+                if mood_scores:
+                    total_purity += sum(sorted(mood_scores.values(), reverse=True)[:3])
+            raw_purities.append(total_purity)
+
+        if len(raw_diversities) < 5:
+            return None
+
+        ln_div = np.log1p(raw_diversities)
+        ln_pur = np.log1p(raw_purities)
+
+        return (
+            {'min': float(ln_div.min()), 'max': float(ln_div.max()),
+             'mean': float(ln_div.mean()), 'sd': float(ln_div.std())},
+            {'min': float(ln_pur.min()), 'max': float(ln_pur.max()),
+             'mean': float(ln_pur.mean()), 'sd': float(ln_pur.std())},
+        )
+    except Exception as e:
+        logger.warning(f"LN stats calibration failed: {e}")
+        return None
+
 def _format_and_score_iteration_result(
     labels, valid_tracks, X_feat_orig, data_for_metrics,
     centers, model, pca, scaler, active_moods, 
-    params, max_songs_per_cluster, run_idx, use_embeddings, score_weights, log_prefix):
+    params, max_songs_per_cluster, run_idx, use_embeddings, score_weights, log_prefix, clustering_mode='musicnn'):
     """
     Packages all results from the iteration into a dictionary and calculates the final fitness score.
     This version includes the advanced filtering and scoring logic.
@@ -730,10 +870,11 @@ def _format_and_score_iteration_result(
                 musicnn_out_dims = m_model.get('output_dims')
                 maest_out_dims = a_model.get('output_dims')
                 hybrid_scaler = HybridScaler(m_scaler_h, m_pca_h, a_scaler_h, a_pca_h, n_musicnn_dims)
-                inverted_vec
-                logger.warning(f"{log_prefix} Iteration {run_idx}: Failed to invert hybrid centroid for cluster {label_id}. Skipping.")
-                continue
-                
+                inverted_vec = hybrid_scaler.inverse_transform(center_vec, musicnn_out_dims, maest_out_dims)
+                if inverted_vec is None:
+                    logger.warning(f"{log_prefix} Iteration {run_idx}: Failed to invert hybrid centroid for cluster {label_id}. Skipping.")
+                    continue
+
                 # Name using the inverted vector (no additional scaler/pca needed)
                 name, centroid_details = _name_cluster(inverted_vec, None, False, active_moods, None)
             else:
@@ -778,8 +919,8 @@ def _format_and_score_iteration_result(
 
     raw_mood_diversity_score = sum(unique_predominant_mood_scores.values())
     ln_mood_diversity = np.log1p(raw_mood_diversity_score)
-    diversity_stats = LN_MOOD_DIVERSITY_EMBEDING_STATS if use_embeddings else LN_MOOD_DIVERSITY_STATS
-    mean_div, sd_div = diversity_stats.get("mean"), diversity_stats.get("sd")
+    _diversity_stats, _purity_stats = _resolve_ln_stats(use_embeddings, clustering_mode)
+    mean_div, sd_div = _diversity_stats.get("mean"), _diversity_stats.get("sd")
     if mean_div is not None and sd_div is not None and sd_div > 1e-9:
         metrics['mood_diversity'] = (ln_mood_diversity - mean_div) / sd_div
         
@@ -822,8 +963,7 @@ def _format_and_score_iteration_result(
 
     raw_mood_purity = sum(all_playlist_purities)
     ln_mood_purity = np.log1p(raw_mood_purity)
-    purity_stats = LN_MOOD_PURITY_EMBEDING_STATS if use_embeddings else LN_MOOD_PURITY_STATS
-    mean_pur, sd_pur = purity_stats.get("mean"), purity_stats.get("sd")
+    mean_pur, sd_pur = _purity_stats.get("mean"), _purity_stats.get("sd")
     if mean_pur is not None and sd_pur is not None and sd_pur > 1e-9:
         metrics['mood_purity'] = (ln_mood_purity - mean_pur) / sd_pur
         
