@@ -632,6 +632,8 @@ def save_track_analysis_and_embedding(
     year=None,
     rating=None,
     duration=None,
+    mood_column='mood_vector',
+    embedding_table='embedding',
 ):
     title = sanitize_db_field(title, max_length=500, field_name="title")
     author = sanitize_db_field(author, max_length=200, field_name="author")
@@ -650,8 +652,8 @@ def save_track_analysis_and_embedding(
     cur = conn.cursor()
     try:
         cur.execute(
-            """
-            INSERT INTO score (item_id, title, author, tempo, key, scale, mood_vector, energy, other_features, album, album_artist, year, rating, duration)
+            f"""
+            INSERT INTO score (item_id, title, author, tempo, key, scale, {mood_column}, energy, other_features, album, album_artist, year, rating, duration)
             VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             ON CONFLICT (item_id) DO UPDATE SET
                 title = EXCLUDED.title,
@@ -659,7 +661,7 @@ def save_track_analysis_and_embedding(
                 tempo = EXCLUDED.tempo,
                 key = EXCLUDED.key,
                 scale = EXCLUDED.scale,
-                mood_vector = EXCLUDED.mood_vector,
+                {mood_column} = EXCLUDED.{mood_column},
                 energy = EXCLUDED.energy,
                 other_features = EXCLUDED.other_features,
                 album = EXCLUDED.album,
@@ -689,8 +691,8 @@ def save_track_analysis_and_embedding(
         if isinstance(embedding_vector, np.ndarray) and embedding_vector.size > 0:
             embedding_blob = embedding_vector.astype(np.float32).tobytes()
             cur.execute(
-                """
-                INSERT INTO embedding (item_id, embedding) VALUES (%s, %s)
+                f"""
+                INSERT INTO {embedding_table} (item_id, embedding) VALUES (%s, %s)
                 ON CONFLICT (item_id) DO UPDATE SET embedding = EXCLUDED.embedding
             """,
                 (item_id, psycopg2.Binary(embedding_blob)),
@@ -726,6 +728,32 @@ def save_clap_embedding(item_id, clap_embedding_vector):
     except Exception:
         conn.rollback()
         logger.exception(f"Error saving CLAP embedding for {item_id}")
+        raise
+    finally:
+        cur.close()
+
+
+def save_maest_embedding(item_id, embedding_vector):
+    """Save a MAEST embedding vector to the maest_embedding table."""
+    if embedding_vector is None or (
+        isinstance(embedding_vector, np.ndarray) and embedding_vector.size == 0
+    ):
+        return
+    conn = get_db()
+    cur = conn.cursor()
+    try:
+        embedding_blob = embedding_vector.astype(np.float32).tobytes()
+        cur.execute(
+            """
+            INSERT INTO maest_embedding (item_id, embedding) VALUES (%s, %s)
+            ON CONFLICT (item_id) DO UPDATE SET embedding = EXCLUDED.embedding
+        """,
+            (item_id, psycopg2.Binary(embedding_blob)),
+        )
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        logger.exception(f"Error saving MAEST embedding for {item_id}")
         raise
     finally:
         cur.close()

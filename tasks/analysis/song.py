@@ -39,6 +39,10 @@ from config import (
     MUSICNN_BATCH_SIZE,
     OTHER_FEATURE_LABELS,
     PER_SONG_MODEL_RELOAD,
+    MAEST_MODEL_PATH,
+    MAEST_INPUT_NAME,
+    MAEST_OUTPUT_NAMES,
+    MAEST_MOOD_LABELS,
 )
 from database import (
     get_db,
@@ -109,6 +113,7 @@ def sigmoid(x):
 # only_models/exclude_models is a typo that would silently match nothing.
 MODEL_LABELS = frozenset({
     'musicnn',
+    'maest',
     'clap',
     'clap_text',
     'whisper_encoder',
@@ -785,3 +790,113 @@ def run_lyrics_for_track(
             level=logging.WARNING,
         )
         return False
+
+
+# ─── MAEST Analysis Functions ──────────────────────────────────────────────
+
+def prepare_maest_melspectrogram(audio, sr=16000):
+    """Build the (1, 1876, 96) float32 MAEST-style log-mel spectrogram.
+
+    MAEST expects a 30-second clip with n_mels=96, n_fft=1024, hop_length=256,
+    log10(1+10000*S) normalization, then z-scored per-frame.
+    The model input shape is (batch, time, mels) = (1, T, 96).
+
+    Returns a (1, T, 96) tensor ready for ONNX.
+    Returns None on failure.
+    """
+    duration = 30
+    target_samples = int(sr * duration)
+    y = audio[:target_samples] if len(audio) >= target_samples else np.pad(
+        audio, (0, target_samples - len(audio))
+    )
+    try:
+        S = librosa.feature.melspectrogram(y=y, sr=sr, n_fft=1024, hop_length=256, n_mels=96)
+        S_log = np.log10(1 + 10000 * S)
+        mean, std = np.mean(S_log), np.std(S_log)
+        if std == 0:
+            std = 1e-8
+        S_norm = (S_log - mean) / std
+        mel = S_norm.T.astype(np.float32)
+        mel = mel[np.newaxis, :, :]
+        return mel
+    except Exception as e:
+        logger.error(f"prepare_maest_melspectrogram failed: {e}")
+        return None
+
+
+def run_maest_inference(session, mel_tensor, input_name="melspectrogram"):
+    """Run MAEST ONNX model on a single (1, 1876, 96) mel tensor.
+
+    Returns (embedding_vector, logits_vector) as 1D numpy float32 arrays,
+    or (None, None) on failure.
+    """
+    try:
+        output_names = [o.name for o in session.get_outputs()]
+        actual_emb_name = None
+        actual_logits_name = None
+        for o in output_names:
+            if "logits" in o.lower():
+                actual_logits_name = o
+            elif "layer_07" in o or "layer_7" in o:
+                actual_emb_name = o
+
+        if not actual_logits_name:
+            actual_logits_name = output_names[0]
+        if not actual_emb_name and len(output_names) >= 2:
+            actual_emb_name = output_names[1]
+
+        targets = [actual_logits_name]
+        if actual_emb_name:
+            targets.append(actual_emb_name)
+
+        outputs = session.run(targets, {input_name: mel_tensor.astype(np.float32)})
+
+        logits = np.squeeze(outputs[0])
+
+        if len(outputs) >= 2:
+            embedding = outputs[1]
+            if embedding.ndim == 3:
+                embedding = np.mean(embedding, axis=1)
+            embedding = np.squeeze(embedding)
+        else:
+            embedding = logits
+
+        return embedding.astype(np.float32), logits.astype(np.float32)
+    except Exception as e:
+        logger.error(f"run_maest_inference failed: {e}", exc_info=True)
+        return None, None
+
+
+def load_maest_session(model_path, label="maest"):
+    """Create a single ONNX session for the MAEST model."""
+    opts = resolve_providers(allow_coreml=False)
+    return create_onnx_session(model_path, opts, label=label)
+
+
+def cleanup_maest_session(session, context=""):
+    """Close a MAEST ONNX session and run gc."""
+    if session is None:
+        return
+    suffix = f" ({context})" if context else ""
+    logger.info(f"Cleaning up MAEST session{suffix}")
+    try:
+        cleanup_onnx_session(session, "maest")
+    except Exception as e:
+        logger.warning(f"Error cleaning up MAEST session{suffix}: {e}")
+    gc.collect()
+
+
+def persist_maest_results(item, analysis, top_moods, embedding, other_features_str):
+    """Save MAEST analysis + embedding via app_helper."""
+    save_track_analysis_and_embedding(
+        item['Id'], item['Name'], item.get('AlbumArtist', 'Unknown'),
+        analysis['tempo'], analysis['key'], analysis['scale'], top_moods, embedding,
+        mood_column='maest_mood_vector',
+        embedding_table='maest_embedding',
+        energy=analysis['energy'],
+        other_features=other_features_str,
+        album=item.get('Album') or item.get('album'),
+        album_artist=item.get('OriginalAlbumArtist') or item.get('originalAlbumArtist') or item.get('album_artist'),
+        year=item.get('Year'),
+        rating=item.get('Rating'),
+    )
