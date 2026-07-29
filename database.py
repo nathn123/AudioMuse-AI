@@ -1057,6 +1057,10 @@ def init_db():
             )
             cur.execute(
                 "ALTER TABLE score ADD COLUMN IF NOT EXISTS "
+                "maest_mood_vector TEXT"
+            )
+            cur.execute(
+                "ALTER TABLE score ADD COLUMN IF NOT EXISTS "
                 "created_at TIMESTAMP NOT NULL DEFAULT now()"
             )
             cur.execute(
@@ -1266,6 +1270,14 @@ def init_db():
             cur.execute(
                 "CREATE TABLE IF NOT EXISTS embedding (item_id TEXT PRIMARY KEY, FOREIGN KEY (item_id) REFERENCES score (item_id) ON DELETE CASCADE)"
             )
+            cur.execute(
+                "CREATE TABLE IF NOT EXISTS maest_embedding (item_id TEXT PRIMARY KEY, FOREIGN KEY (item_id) REFERENCES score (item_id) ON DELETE CASCADE)"
+            )
+            cur.execute(
+                "SELECT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'maest_embedding' AND column_name = 'embedding')"
+            )
+            if not cur.fetchone()[0]:
+                cur.execute("ALTER TABLE maest_embedding ADD COLUMN embedding BYTEA")
             cur.execute(
                 "SELECT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'embedding' AND column_name = 'embedding')"
             )
