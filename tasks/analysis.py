@@ -145,7 +145,7 @@ def _run_all_index_builds(log_fn=None):
     lyrics / SemGrove / artist-GMM subsystems; they are only needed when a
     rebuild actually runs.
     """
-    from .ivf_manager import build_and_store_ivf_index
+    from .ivf_manager import build_and_store_ivf_index, build_and_store_maest_ivf_index
     from .clap_text_search import build_and_store_clap_index
     from .lyrics_manager import build_and_store_lyrics_index, build_and_store_lyrics_axes_index
     from .sem_grove_manager import build_and_store_sem_grove_index
@@ -173,6 +173,9 @@ def _run_all_index_builds(log_fn=None):
           lambda: build_and_store_ivf_index(get_db()),
           progress=95, banner="Building IVF audio index...",
           fatal=True)
+    _step("MAEST IVF index rebuilt",
+          lambda: build_and_store_maest_ivf_index(get_db()),
+          progress=95, banner="Building MAEST IVF audio index...")
     _step("CLAP text search index",
           lambda: build_and_store_clap_index(get_db()),
           progress=96, banner="Building CLAP text search index...")

@@ -869,8 +869,14 @@ except OSError:
 if not _is_worker:
   with app.app_context():
     # --- Initial IVF Index Load ---
-    from tasks.ivf_manager import load_ivf_index_for_querying
+    from tasks.ivf_manager import load_ivf_index_for_querying, load_maest_ivf_index
     load_ivf_index_for_querying()
+    # Load MAEST index on startup if present (silent if not built yet)
+    try:
+        load_maest_ivf_index()
+        logger.info("MAEST IVF index loaded at startup.")
+    except Exception as e:
+        logger.debug(f"MAEST IVF index not available at startup: {e}")
     # --- Load Artist Similarity Index ---
     from tasks.artist_gmm_manager import load_artist_index_for_querying
     try:
