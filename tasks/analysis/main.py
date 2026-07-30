@@ -764,7 +764,7 @@ def _run_already_finished(task_id):
     return None
 
 
-def run_analysis_task(num_recent_albums, top_n_moods, server_scope="all"):
+def run_analysis_task(num_recent_albums, top_n_moods, models_enabled=None, server_scope="all"):
     current_job = get_current_job(redis_conn)
     parent_id = current_job.id if current_job else str(uuid.uuid4())
 
