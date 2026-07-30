@@ -35,6 +35,7 @@ from rq import get_current_job
 from config import (
     TEMP_DIR,
     MOOD_LABELS,
+    MAEST_MOOD_LABELS,
     EMBEDDING_MODEL_PATH,
     PREDICTION_MODEL_PATH,
     OTHER_FEATURE_LABELS,
@@ -42,6 +43,7 @@ from config import (
     LYRICS_ENABLED,
     ANALYSIS_MONITOR_DB_INTERVAL,
     CHROMAPRINT_COLLECTION_ENABLED,
+    ANALYSIS_MODE,
 )
 
 from flask_app import app
@@ -77,6 +79,12 @@ from .song import (
     cleanup_musicnn_sessions,
     cleanup_optional_models,
     robust_load_audio_with_fallback,
+    prepare_maest_melspectrogram,
+    run_maest_inference,
+    load_maest_session,
+    cleanup_maest_session,
+    persist_maest_results,
+    analyze_track_maest,
 )
 
 
@@ -138,6 +146,17 @@ def _stage_musicnn(path, track_name_full, plan, model_paths, session_recycler,
     session_recycler.increment()
     cleanup_cuda_memory(force=False)
     return onnx_sessions, analysis, embedding, track_audio, track_sr
+
+
+def _stage_maest(path, track_name_full):
+    """Run MAEST inference on one track. Returns (analysis, embedding)."""
+    analysis, embedding = analyze_track_maest(
+        path, MAEST_MOOD_LABELS, onnx_sessions=None
+    )
+    if analysis is None:
+        raise TrackNotAnalyzable(f"MAEST could not decode audio for {track_name_full}")
+    cleanup_cuda_memory(force=False)
+    return analysis, embedding
 
 
 def _stage_identity(item, plan, track_name_full, musicnn_embedding, fingerprint_index,
@@ -279,6 +298,13 @@ def _analyze_single_track(
                 top_moods, musicnn_embedding,
             )
 
+        if plan.maest:
+            ensure_download()
+            maest_analysis, maest_embedding = _stage_maest(path, track_name_full)
+            top_moods_maest = _ah.top_moods_from(maest_analysis, top_n_moods)
+            persist_maest_results(item, maest_analysis, top_moods_maest, maest_embedding, _ah.zero_other_features(OTHER_FEATURE_LABELS))
+            produced = True
+
         if plan.clap:
             clap_embedding, clap_saved = _stage_clap(
                 path, track_id_str, track_name_full, clap_label_embeddings
@@ -392,6 +418,7 @@ def _analyze_album_task_impl(album_id, album_name, top_n_moods, parent_task_id):
             total_tracks_in_album = len(tracks)
             (
                 existing_track_ids_set,
+                existing_maest_track_ids_set,
                 missing_clap_ids_set,
                 missing_lyrics_ids_set,
                 clap_label_embeddings,
@@ -437,6 +464,7 @@ def _analyze_album_task_impl(album_id, album_name, top_n_moods, parent_task_id):
                 plan = _ah.plan_track_stages(
                     _ah.catalog_item_id(item),
                     existing_track_ids_set,
+                    existing_maest_track_ids_set,
                     missing_clap_ids_set,
                     missing_lyrics_ids_set,
                     LYRICS_ENABLED,

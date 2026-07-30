@@ -900,3 +900,68 @@ def persist_maest_results(item, analysis, top_moods, embedding, other_features_s
         year=item.get('Year'),
         rating=item.get('Rating'),
     )
+
+
+def analyze_track_maest(file_path, mood_labels_list, onnx_sessions=None, return_audio=False):
+    """Analyze a single track using the MAEST ONNX model.
+
+    MAEST outputs both logits and a 768-dim embedding from a single session.
+    Returns (analysis_result, embedding) or (analysis_result, embedding, audio, sr).
+    """
+    name = os.path.basename(file_path)
+    logger.info(f"[MAEST] Starting analysis for: {name}")
+    nothing = (None, None, None, None) if return_audio else (None, None)
+
+    audio, sr = robust_load_audio_with_fallback(file_path, target_sr=16000)
+    if audio is None or not np.any(audio) or audio.size == 0:
+        logger.warning(f"[MAEST] Could not load audio: {name}")
+        return nothing
+
+    tempo, average_energy, musical_key, scale = extract_basic_features(audio, sr)
+
+    mel_input = prepare_maest_melspectrogram(audio, sr)
+    if mel_input is None:
+        logger.warning(f"[MAEST] Mel creation failed: {name}")
+        return nothing
+
+    sess = None
+    embedding = None
+    mood_logits = None
+    owns_session = False
+    try:
+        if onnx_sessions is not None and 'maest' in onnx_sessions:
+            sess = onnx_sessions['maest']
+        else:
+            sess = load_maest_session(MAEST_MODEL_PATH)
+            owns_session = True
+
+        embedding, mood_logits = run_maest_inference(
+            sess, mel_input, input_name=MAEST_INPUT_NAME,
+        )
+        if embedding is None or mood_logits is None:
+            raise RuntimeError("MAEST inference returned None")
+
+        mood_probs = sigmoid(mood_logits)
+        moods = {label: float(score) for label, score in zip(mood_labels_list, mood_probs)}
+
+    except Exception as e:
+        logger.error(f"[MAEST] Inference failed for {name}: {e}", exc_info=True)
+        return nothing
+    finally:
+        if sess is not None and owns_session:
+            cleanup_maest_session(sess, context="track end")
+
+    analysis_result = {
+        "tempo": tempo,
+        "key": musical_key,
+        "scale": scale,
+        "moods": moods,
+        "energy": average_energy,
+    }
+    gc.collect()
+    comprehensive_memory_cleanup(force_cuda=False, reset_onnx_pool=False)
+    return (
+        (analysis_result, embedding, audio, sr)
+        if return_audio
+        else (analysis_result, embedding)
+    )
