@@ -172,6 +172,17 @@ def get_existing_track_ids(track_ids):
         return {row[0] for row in cur.fetchall()}
 
 
+def get_existing_maest_track_ids(track_ids):
+    if not track_ids:
+        return set()
+    with get_db() as conn, conn.cursor() as cur:
+        cur.execute(
+            "SELECT item_id FROM maest_embedding WHERE item_id IN %s",
+            (tuple(_str_ids(track_ids)),),
+        )
+        return {row[0] for row in cur.fetchall()}
+
+
 def fetch_existing_top_moods(track_ids, top_n_moods):
     if not track_ids or not top_n_moods or top_n_moods <= 0:
         return {}
@@ -242,30 +253,33 @@ def upsert_artist_mappings_for_tracks(tracks, album_name=None):
 
 class TrackPlan(NamedTuple):
     musicnn: bool
+    maest: bool
     clap: bool
     lyrics: bool
 
     @property
     def any_stage(self):
-        return self.musicnn or self.clap or self.lyrics
+        return self.musicnn or self.maest or self.clap or self.lyrics
 
     @property
     def needs_audio(self):
-        return self.musicnn or self.clap
+        return self.musicnn or self.maest or self.clap
 
     def describe(self):
         wanted = [
             name
-            for name, on in (('MusiCNN', self.musicnn), ('CLAP', self.clap), ('Lyrics', self.lyrics))
+            for name, on in (('MusiCNN', self.musicnn), ('MAEST', self.maest),
+                             ('CLAP', self.clap), ('Lyrics', self.lyrics))
             if on
         ]
         return ' + '.join(wanted) if wanted else 'nothing'
 
 
-def plan_track_stages(track_id, existing_ids, missing_clap_ids, missing_lyrics_ids,
+def plan_track_stages(track_id, existing_ids, existing_maest_ids, missing_clap_ids, missing_lyrics_ids,
                       lyrics_enabled):
     return TrackPlan(
         track_id not in existing_ids,
+        track_id not in existing_maest_ids,
         track_id in missing_clap_ids,
         bool(lyrics_enabled) and track_id in missing_lyrics_ids,
     )
@@ -274,6 +288,7 @@ def plan_track_stages(track_id, existing_ids, missing_clap_ids, missing_lyrics_i
 def replan_for_catalogue_row(plan, item_id):
     return TrackPlan(
         False,
+        plan.maest and bool(get_missing_ids_in_table('maest_embedding', [item_id])),
         plan.clap and bool(get_missing_ids_in_table('clap_embedding', [item_id])),
         plan.lyrics and bool(get_missing_ids_in_table('lyrics_embedding', [item_id])),
     )
@@ -356,6 +371,7 @@ def build_album_plan(album_name, tracks, top_n_moods, redis_conn, lyrics_enabled
 
     track_ids = [catalog_item_id(t) for t in tracks]
     existing_ids = get_existing_track_ids(track_ids)
+    existing_maest_ids = get_existing_maest_track_ids(track_ids)
     missing_clap_ids = (
         get_missing_ids_in_table('clap_embedding', track_ids)
         if clap_analyzer.is_clap_available()
@@ -365,9 +381,10 @@ def build_album_plan(album_name, tracks, top_n_moods, redis_conn, lyrics_enabled
         get_missing_ids_in_table('lyrics_embedding', track_ids) if lyrics_enabled else set()
     )
     logger.info(
-        "Feature plan for album '%s': MusiCNN=%d, DCLAP=%d, Lyrics=%d of %d tracks.",
+        "Feature plan for album '%s': MusiCNN=%d, MAEST=%d, DCLAP=%d, Lyrics=%d of %d tracks.",
         album_name,
         len(tracks) - len(existing_ids),
+        len(tracks) - len(existing_maest_ids),
         len(missing_clap_ids),
         len(missing_lyrics_ids),
         len(tracks),
@@ -378,7 +395,7 @@ def build_album_plan(album_name, tracks, top_n_moods, redis_conn, lyrics_enabled
     prior_moods = _prior_moods_for_lyrics(
         track_ids, existing_ids, missing_lyrics_ids, top_n_moods, lyrics_enabled, album_name
     )
-    return existing_ids, missing_clap_ids, missing_lyrics_ids, clap_label_embeddings, prior_moods
+    return existing_ids, existing_maest_ids, missing_clap_ids, missing_lyrics_ids, clap_label_embeddings, prior_moods
 
 
 def flush_pending_track_maps(pending_track_maps, map_flush_errors, album_name):
