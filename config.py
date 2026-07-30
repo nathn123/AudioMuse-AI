@@ -294,6 +294,14 @@ ANALYSIS_MODE = os.environ.get("ANALYSIS_MODE", "musicnn").lower()
 EMBEDDER_TYPE = ANALYSIS_MODE
 SEQUENTIAL_ANALYSIS = os.environ.get("SEQUENTIAL_ANALYSIS", "True").lower() == "true"
 
+# ─── Clustering Mode Settings ────────────────────────────────────────────
+# Accepted: musicnn, maest, hybrid_blend, dual_consensus
+CLUSTERING_MODE = os.environ.get("CLUSTERING_MODE", "hybrid_blend")
+HYBRID_PCA_MUSICNN = int(os.environ.get("HYBRID_PCA_MUSICNN", "20"))
+HYBRID_PCA_MAEST = int(os.environ.get("HYBRID_PCA_MAEST", "40"))
+HYBRID_WEIGHT_MUSICNN = float(os.environ.get("HYBRID_WEIGHT_MUSICNN", "0.3"))
+HYBRID_WEIGHT_MAEST = float(os.environ.get("HYBRID_WEIGHT_MAEST", "0.7"))
+
 # --- Guided Evolutionary Clustering Constants ---
 TOP_N_ELITES = int(os.environ.get("CLUSTERING_TOP_N_ELITES", "10")) # Number of best solutions to keep as elites
 EXPLOITATION_START_FRACTION = float(os.environ.get("CLUSTERING_EXPLOITATION_START_FRACTION", "0.2")) # Fraction of runs before starting to use elites (e.g., 0.2 means after 20% of runs)
@@ -363,6 +371,33 @@ LN_OTHER_FEATURES_PURITY_STATS = {
     "max": float(os.environ.get("LN_OTHER_FEAT_PUR_MAX", "8.95")),   # Updated value
     "mean": float(os.environ.get("LN_OTHER_FEAT_PUR_MEAN", "8.84")),  # Updated value
     "sd": float(os.environ.get("LN_OTHER_FEAT_PUR_SD", "0.07"))     # Updated value
+}
+
+# --- Mode-Specific LN Stats (used by clustering with clustering_mode != musicnn) ---
+# Calibrated at runtime by _calibrate_ln_stats(); these are safe defaults.
+LN_MAEST_GENRE_DIVERSITY_STATS = {
+    "min": float(os.environ.get("LN_MAEST_GENRE_DIV_MIN", "-0.19")),
+    "max": float(os.environ.get("LN_MAEST_GENRE_DIV_MAX", "2.06")),
+    "mean": float(os.environ.get("LN_MAEST_GENRE_DIV_MEAN", "1.00")),
+    "sd": float(os.environ.get("LN_MAEST_GENRE_DIV_SD", "0.50")),
+}
+LN_MAEST_GENRE_PURITY_STATS = {
+    "min": float(os.environ.get("LN_MAEST_GENRE_PUR_MIN", "8.67")),
+    "max": float(os.environ.get("LN_MAEST_GENRE_PUR_MAX", "8.95")),
+    "mean": float(os.environ.get("LN_MAEST_GENRE_PUR_MEAN", "8.84")),
+    "sd": float(os.environ.get("LN_MAEST_GENRE_PUR_SD", "0.07")),
+}
+LN_HYBRID_MOOD_DIVERSITY_STATS = {
+    "min": float(os.environ.get("LN_HYBRID_MOOD_DIV_MIN", "-0.19")),
+    "max": float(os.environ.get("LN_HYBRID_MOOD_DIV_MAX", "2.06")),
+    "mean": float(os.environ.get("LN_HYBRID_MOOD_DIV_MEAN", "1.00")),
+    "sd": float(os.environ.get("LN_HYBRID_MOOD_DIV_SD", "0.50")),
+}
+LN_HYBRID_MOOD_PURITY_STATS = {
+    "min": float(os.environ.get("LN_HYBRID_MOOD_PUR_MIN", "8.67")),
+    "max": float(os.environ.get("LN_HYBRID_MOOD_PUR_MAX", "8.95")),
+    "mean": float(os.environ.get("LN_HYBRID_MOOD_PUR_MEAN", "8.84")),
+    "sd": float(os.environ.get("LN_HYBRID_MOOD_PUR_SD", "0.07")),
 }
 
 # Threshold for considering an "other feature" predominant in a playlist for purity calculation
@@ -950,6 +985,11 @@ LYRICS_GTE_WARMUP_DURATION = int(os.environ.get("LYRICS_GTE_WARMUP_DURATION", "3
 # --- IVF Index Constants ---
 INDEX_NAME = os.environ.get("IVF_INDEX_NAME", "music_library")  # The primary key for our index in the DB
 IVF_METRIC = os.environ.get("IVF_METRIC", "angular")  # Options: 'angular' (Cosine), 'euclidean', 'dot' (InnerProduct)
+
+# MAEST IVF index name — only built when ANALYSIS_MODE=both or ANALYSIS_MODE=maest
+INDEX_NAME_MAEST = os.environ.get("IVF_INDEX_NAME_MAEST", "music_library_maest")
+AUTO_CALIBRATE_LN_STATS = os.environ.get("AUTO_CALIBRATE_LN_STATS", "True").lower() == "true"
+FUSION_WEIGHT_MUSICNN_DEFAULT = float(os.environ.get("FUSION_WEIGHT_MUSICNN_DEFAULT", "0.3"))
 
 # --- Disk-Paged IVF Index Constants ---
 # The large per-song similarity indexes (audio, CLAP, lyrics, SemGrove)
