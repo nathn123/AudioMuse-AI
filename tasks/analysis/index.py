@@ -43,7 +43,7 @@ logger = logging.getLogger(__name__)
 
 
 def _run_all_index_builds(log_fn=None, progress_start=95, progress_end=98):
-    from ..ivf_manager import build_and_store_ivf_index
+    from ..ivf_manager import build_and_store_ivf_index, build_and_store_maest_ivf_index
     from ..clap_text_search import build_and_store_clap_index
     from ..lyrics_manager import build_and_store_lyrics_index, build_and_store_lyrics_axes_index
     from ..sem_grove_manager import build_and_store_sem_grove_index
@@ -52,6 +52,8 @@ def _run_all_index_builds(log_fn=None, progress_start=95, progress_end=98):
     steps = (
         ("IVF index rebuilt", "Building IVF audio index...",
          lambda: build_and_store_ivf_index(get_db()), True),
+        ("MAEST IVF index rebuilt", "Building MAEST IVF index...",
+         lambda: build_and_store_maest_ivf_index(get_db()), False),
         ("CLAP text search index", "Building CLAP text search index...",
          lambda: build_and_store_clap_index(get_db()), False),
         ("Lyrics search index", "Building lyrics search index...",
