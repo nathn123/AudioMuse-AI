@@ -1431,6 +1431,8 @@ def create_playlist_from_ids(playlist_name: str, track_ids: list, user_creds: di
             raise RuntimeError("Media server API response did not include a playlist ID.")
 
         return playlist_id
+    except Exception as e:
+        raise e
 
 
 def build_and_store_maest_ivf_index(db_conn=None):

@@ -44,8 +44,21 @@ services:
       POSTGRES_PORT: "${POSTGRES_PORT:-5432}"
       REDIS_URL: "${REDIS_URL:-redis://redis:6379/0}"
       TEMP_DIR: "/app/temp_audio"
+    entrypoint: ["/app/docker-entrypoint.sh"]   # ← overridden
     volumes:
       - temp-audio-flask:/app/temp_audio
+      - ../../rq_job_state.py:/app/rq_job_state.py  # Add this line
+      - ../../tasks:/app/tasks            # ← Only tasks/ (your analysis code)
+      - ../../config.py:/app/config.py    # ← config.py if you edit it
+      - ../../database.py:/app/database.py
+      - ../../sanitization.py:/app/sanitization.py
+      - ../../app_analysis.py:/app/app_analysis.py
+      - ../../app_helper.py:/app/app_helper.py
+      - ../../app_dashboard.py:/app/app_dashboard.py
+      - ../../error:/app/error
+      - ../../flask_app.py:/app/flask_app.py
+      - ../../static:/app/static          # ← Static assets for hot-reload
+      - ../../templates:/app/templates    # ← Templates for hot-reload
     depends_on:
       - redis
       - postgres
@@ -77,9 +90,19 @@ services:
       NVIDIA_VISIBLE_DEVICES: "0"
       NVIDIA_DRIVER_CAPABILITIES: "compute,utility"
       USE_GPU_CLUSTERING: "${USE_GPU_CLUSTERING:-true}"
+      SEQUENTIAL_ANALYSIS: "${SEQUENTIAL_ANALYSIS:-false}"
       TEMP_DIR: "/app/temp_audio"
+    entrypoint: ["/app/docker-entrypoint.sh"]   # ← overridden
     volumes:
-      - temp-audio-worker:/app/temp_audio
+    - temp-audio-worker:/app/temp_audio
+    - ../../rq_job_state.py:/app/rq_job_state.py  # Add this line
+    - ../../tasks:/app/tasks            # ← Only tasks/ (your analysis code)
+    - ../../config.py:/app/config.py
+    - ../../database.py:/app/database.py
+    - ../../sanitization.py:/app/sanitization.py
+    - ../../app_helper.py:/app/app_helper.py
+    - ../../error:/app/error
+    # Worker doesn't need static/templates        # Mount source code for hot-reload
     depends_on:
       - redis
       - postgres

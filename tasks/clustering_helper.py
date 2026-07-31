@@ -116,7 +116,8 @@ def _perform_single_clustering_iteration(
     max_songs_per_cluster, log_prefix,
     elite_solutions_params_list, exploitation_probability, mutation_config,
     score_weights, enable_clustering_embeddings, clustering_mode="musicnn",
-    hybrid_pca_musicnn=HYBRID_PCA_MUSICNN, hybrid_pca_maest=HYBRID_PCA_MAEST):
+    hybrid_pca_musicnn=HYBRID_PCA_MUSICNN, hybrid_pca_maest=HYBRID_PCA_MAEST,
+    nmi_threshold=0.3):
     """
     Orchestrates a single evolutionary run of the clustering process.
     This function is now a high-level coordinator.
@@ -279,6 +280,7 @@ def _perform_single_clustering_iteration(
                 labels_mn, labels_ma,
                 X_a=reduced_mn, X_b=reduced_ma,
                 weight_a=HYBRID_WEIGHT_MUSICNN, weight_b=HYBRID_WEIGHT_MAEST,
+                nmi_threshold=nmi_threshold,
             )
 
             # Build fused feature space for scoring (weighted concat of each stream in original space)

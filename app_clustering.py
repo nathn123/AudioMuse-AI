@@ -71,6 +71,7 @@ from config import (
     HYBRID_WEIGHT_MAEST,
     HYBRID_PCA_MUSICNN,
     HYBRID_PCA_MAEST,
+    NMI_THRESHOLD,
 )
 
 # RQ import
@@ -426,10 +427,11 @@ def start_clustering_endpoint():
             'enable_clustering_embeddings', ENABLE_CLUSTERING_EMBEDDINGS
         ),
         "clustering_mode_param": data.get('clustering_mode', CLUSTERING_MODE),
-        "hybrid_weight_musicnn_param": float(data.get('hybrid_weight_musicnn', HYBRID_WEIGHT_MUSICNN)),
-        "hybrid_weight_maest_param": float(data.get('hybrid_weight_maest', HYBRID_WEIGHT_MAEST)),
-        "hybrid_pca_musicnn_param": int(data.get('hybrid_pca_musicnn', HYBRID_PCA_MUSICNN)),
-        "hybrid_pca_maest_param": int(data.get('hybrid_pca_maest', HYBRID_PCA_MAEST)),
+        "hybrid_weight_musicnn_param": float(data.get('hybrid_weight_musicnn') or HYBRID_WEIGHT_MUSICNN),
+        "hybrid_weight_maest_param": float(data.get('hybrid_weight_maest') or HYBRID_WEIGHT_MAEST),
+        "hybrid_pca_musicnn_param": int(data.get('hybrid_pca_musicnn') or HYBRID_PCA_MUSICNN),
+        "hybrid_pca_maest_param": int(data.get('hybrid_pca_maest') or HYBRID_PCA_MAEST),
+        "nmi_threshold_param": float(data.get('nmi_threshold') or NMI_THRESHOLD),
     }
 
     # Clean up details of previously successful or stale tasks before starting a new one
@@ -450,3 +452,4 @@ def start_clustering_endpoint():
     return jsonify(
         {"task_id": job.id, "task_type": "main_clustering", "status": job.get_status()}
     ), 202
+

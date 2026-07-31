@@ -195,6 +195,8 @@ function renderConfig(config) {
     document.getElementById('config-openai_model_name').value = config.openai_model_name || '';
     document.getElementById('config-gemini_model_name').value = config.gemini_model_name || 'gemini-2.5-pro';
     document.getElementById('config-mistral_model_name').value = config.mistral_model_name || 'ministral-3b-latest';
+    document.getElementById('config-hybrid_pca_musicnn').value = config.hybrid_pca_musicnn ?? 20;
+    document.getElementById('config-hybrid_pca_maest').value = config.hybrid_pca_maest ?? 40;
 }
 
 function updateCancelButtonState(isDisabled) {
@@ -391,7 +393,12 @@ async function startTask(taskType) {
             openai_model_name: document.getElementById('config-openai_model_name').value,
             gemini_model_name: document.getElementById('config-gemini_model_name').value,
             mistral_model_name: document.getElementById('config-mistral_model_name').value,
-            enable_clustering_embeddings: document.getElementById('config-enable_clustering_embeddings').checked
+            enable_clustering_embeddings: document.getElementById('config-enable_clustering_embeddings').checked,
+            clustering_mode: document.getElementById('config-clustering_type').value,
+            hybrid_weight_musicnn: parseFloat(document.getElementById('dash-weight-musicnn')?.value ?? '0.3'),
+            hybrid_pca_musicnn: parseInt(document.getElementById('config-hybrid_pca_musicnn')?.value ?? '20'),
+            hybrid_pca_maest: parseInt(document.getElementById('config-hybrid_pca_maest')?.value ?? '40'),
+            nmi_threshold: parseFloat(document.getElementById('dash-nmi_threshold')?.value ?? '0.3'),
         });
     }
 

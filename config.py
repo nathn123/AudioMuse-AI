@@ -299,6 +299,8 @@ SEQUENTIAL_ANALYSIS = os.environ.get("SEQUENTIAL_ANALYSIS", "True").lower() == "
 CLUSTERING_MODE = os.environ.get("CLUSTERING_MODE", "hybrid_blend")
 HYBRID_PCA_MUSICNN = int(os.environ.get("HYBRID_PCA_MUSICNN", "20"))
 HYBRID_PCA_MAEST = int(os.environ.get("HYBRID_PCA_MAEST", "40"))
+# NMI threshold for dual-consensus fusion (0.0-1.0). Higher = stricter agreement needed.
+NMI_THRESHOLD = float(os.environ.get("NMI_THRESHOLD", "0.3"))
 HYBRID_WEIGHT_MUSICNN = float(os.environ.get("HYBRID_WEIGHT_MUSICNN", "0.3"))
 HYBRID_WEIGHT_MAEST = float(os.environ.get("HYBRID_WEIGHT_MAEST", "0.7"))
 

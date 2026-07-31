@@ -242,6 +242,7 @@ def run_clustering_batch_task(
     hybrid_weight_maest_param=0.7,
     hybrid_pca_musicnn_param=20,
     hybrid_pca_maest_param=40,
+    nmi_threshold_param=0.3,
 ):
     from flask_app import app
 
@@ -364,6 +365,7 @@ def run_clustering_batch_task(
                     clustering_mode=clustering_mode_param,
                     hybrid_pca_musicnn=hybrid_pca_musicnn_param,
                     hybrid_pca_maest=hybrid_pca_maest_param,
+                    nmi_threshold=nmi_threshold_param,
                 )
                 iterations_completed += 1
 
@@ -462,6 +464,11 @@ def run_clustering_task(
     min_clustering_top_param=None,
     top_n_clustering_playlist_param=None,
     clustering_mode_param="musicnn",
+    hybrid_weight_musicnn_param=0.3,
+    hybrid_weight_maest_param=0.7,
+    hybrid_pca_musicnn_param=20,
+    hybrid_pca_maest_param=40,
+    nmi_threshold_param=0.3,
 ):
     from flask_app import app
 
@@ -678,6 +685,11 @@ def run_clustering_task(
                         enable_clustering_embeddings_param,
                         auto_calibration_param,
                         clustering_mode_param,
+                        hybrid_weight_musicnn_param,
+                        hybrid_weight_maest_param,
+                        hybrid_pca_musicnn_param,
+                        hybrid_pca_maest_param,
+                        nmi_threshold_param,
                     )
                 except Exception as exc:
                     logger.exception(
@@ -1001,6 +1013,11 @@ def _cluster_one_server(
     enable_clustering_embeddings_param,
     auto_calibration_param,
     clustering_mode_param="musicnn",
+    hybrid_weight_musicnn_param=0.3,
+    hybrid_weight_maest_param=0.7,
+    hybrid_pca_musicnn_param=20,
+    hybrid_pca_maest_param=40,
+    nmi_threshold_param=0.3,
 ):
     server_name = target_server['name'] if target_server else 'default server'
     report("Fetching lightweight track data for stratification...", 1)

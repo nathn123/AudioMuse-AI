@@ -40,6 +40,22 @@
                         </label>
                         <input type="number" id="config-top_n_moods">
                     </div>
+                    <div class="advanced-param hidden">
+                        <div>
+                            <label for="config-embedder_type" class="label-with-tooltip">
+                                Embedder Type:
+                                <span class="info-tooltip" tabindex="0">
+                                    <span class="info-icon"></span>
+                                    <span class="tooltip-text">Select which model analyzes your music. MUSICNN is faster and good for mood/genre. MAEST is more detailed and better for fine-grained similarity. "Both" runs both models but uses more disk and processing time.</span>
+                                </span>
+                            </label>
+                            <select id="config-embedder_type">
+                                <option value="musicnn">MUSICNN</option>
+                                <option value="maest">MAEST</option>
+                                <option value="both">MUSICNN + MAEST</option>
+                            </select>
+                        </div>
+                    </div>
                 </div>
             </fieldset>
 
@@ -55,6 +71,21 @@
                             </span>
                         </label>
                         <p style="font-weight: bold; padding: 0.5rem 0; margin:0;">K-Means</p>
+                    </div>
+                    <div class="advanced-param hidden">
+                        <label for="config-clustering_type" class="label-with-tooltip">
+                            Clustering Type:
+                            <span class="info-tooltip" tabindex="0">
+                                <span class="info-icon"></span>
+                                <span class="tooltip-text">Select the embedding strategy for clustering. MUSICNN uses fast mood-focused embeddings. MAEST uses detailed fine-grained embeddings. HYBRID blends both models. DUAL runs them separately and compares results.</span>
+                            </span>
+                        </label>
+                        <select id="config-clustering_type">
+                            <option value="musicnn">MusicNN</option>
+                            <option value="maest">MAEST</option>
+                            <option value="hybrid_blend">Hybrid Blend</option>
+                            <option value="dual_consensus">Dual Consensus</option>
+                        </select>
                     </div>
                     <div class="advanced-param hidden">
                         <label for="config-cluster_algorithm" class="label-with-tooltip">

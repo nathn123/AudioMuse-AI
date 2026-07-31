@@ -207,6 +207,50 @@
        the corner chip server_selector.js pins on every page. Hidden by default and
        revealed only once server_selector.js puts .multi-server on <body> (2+ servers),
        so a single-server install never even flashes them during load. */
+
+    .dash-clustering-form {
+        margin-top: 0.75rem;
+        max-width: 500px;
+    }
+    .dash-clustering-group {
+        margin: 0.75rem 0;
+        padding: 0.75rem;
+        border: 1px solid var(--border-color);
+        border-radius: 0.5rem;
+        background: var(--bg-body);
+    }
+    .dash-clustering-group h4 {
+        margin: 0 0 0.5rem 0;
+        font-size: 0.85rem;
+        color: var(--text-muted);
+        font-weight: 600;
+    }
+    .dash-clustering-row {
+        display: flex;
+        align-items: center;
+        gap: 0.5rem;
+        margin-bottom: 0.5rem;
+    }
+    .dash-clustering-row label {
+        flex: 0 0 auto;
+        font-size: 0.85rem;
+        min-width: 160px;
+    }
+    .dash-clustering-row select,
+    .dash-clustering-row input[type="number"] {
+        flex: 1;
+        max-width: 120px;
+        padding: 0.35rem 0.5rem;
+        border: 1px solid var(--border-color);
+        border-radius: 0.35rem;
+        background: var(--bg-body);
+        color: var(--text-title);
+        font-size: 0.85rem;
+    }
+    .dash-clustering-row input[type="range"] {
+        flex: 1;
+        max-width: 200px;
+    }
 </style>
 {% endblock %}
 
@@ -364,6 +408,77 @@
                 </tr></thead>
                 <tbody><tr><td colspan="5" class="muted">Loading…</td></tr></tbody>
             </table>
+        </div>
+    </section>
+
+    <!-- Dashboard Clustering Controls -->
+    <section class="scope-chip-host">
+        <span class="scope-chip scope-chip-corner scope-catalog">Catalogue</span>
+        <h2>Clustering
+            <span class="info-tooltip" tabindex="0">
+                <span class="info-icon" aria-hidden="true"></span>
+                <span class="tooltip-text">Run clustering right from the dashboard. Configure embedding mode, PCA dimensions, hybrid blend weights and NMI threshold here. These settings are independent from the ones on the Analysis page.</span>
+            </span>
+        </h2>
+        <div class="dash-clustering-form">
+            <div class="dash-clustering-row">
+                <label for="dash-clustering_type">Clustering Mode:</label>
+                <select id="dash-clustering_type">
+                    <option value="musicnn">MusicNN</option>
+                    <option value="maest">MAEST</option>
+                    <option value="hybrid_blend">Hybrid Blend</option>
+                    <option value="dual_consensus">Dual Consensus</option>
+                </select>
+            </div>
+
+            <!-- Single-Mode PCA (shown for musicnn/maest) -->
+            <div id="dash-pca-single" class="dash-clustering-group">
+                <h4>PCA Components (single model)</h4>
+                <div class="dash-clustering-row">
+                    <label for="dash-pca_musicnn_min">PCA Min:</label>
+                    <input type="number" id="dash-pca_musicnn_min" min="0" max="199" value="0">
+                </div>
+                <div class="dash-clustering-row">
+                    <label for="dash-pca_musicnn_max">PCA Max:</label>
+                    <input type="number" id="dash-pca_musicnn_max" min="0" max="199" value="40">
+                </div>
+            </div>
+
+            <!-- Dual-Mode PCA (shown for hybrid_blend/dual_consensus) -->
+            <div id="dash-pca-dual" class="dash-clustering-group" style="display:none;">
+                <h4>Per-Stream PCA Dimensions</h4>
+                <div class="dash-clustering-row">
+                    <label for="dash-pca_musicnn">MusiCNN PCA dims:</label>
+                    <input type="number" id="dash-pca_musicnn" min="1" max="58" value="20">
+                </div>
+                <div class="dash-clustering-row">
+                    <label for="dash-pca_maest">MAEST PCA dims:</label>
+                    <input type="number" id="dash-pca_maest" min="1" max="469" value="40">
+                </div>
+            </div>
+
+            <!-- Hybrid Blend Weights (shown for hybrid_blend) -->
+            <div id="dash-weight-group" class="dash-clustering-group" style="display:none;">
+                <h4>Hybrid Blend Weights</h4>
+                <div class="dash-clustering-row">
+                    <label for="dash-weight-musicnn">MusicNN Weight: <span id="dash-weight-musicnn-label">0.30</span></label>
+                    <input type="range" id="dash-weight-musicnn" min="0" max="1" step="0.05" value="0.3">
+                </div>
+                <div class="dash-clustering-row">
+                    <label>MAEST Weight: <span id="dash-weight-maest-label">0.70</span></label>
+                </div>
+            </div>
+
+            <!-- NMI Threshold (shown for dual_consensus only) -->
+            <div id="dash-nmi-group" class="dash-clustering-group" style="display:none;">
+                <h4>Dual Consensus NMI Threshold</h4>
+                <div class="dash-clustering-row">
+                    <label for="dash-nmi_threshold">NMI Threshold (0.0-1.0):</label>
+                    <input type="number" id="dash-nmi_threshold" min="0" max="1" step="0.05" value="0.3">
+                </div>
+            </div>
+
+            <button id="dash-start-clustering-btn" class="btn btn-primary btn-block" style="margin-top:1rem;">Start Clustering</button>
         </div>
     </section>
 
@@ -838,6 +953,129 @@
                 .forEach(id => setText(id, 'Could not load - check the container log.'));
         }
     }
+
+    // --- Dashboard Clustering Controls ---
+    const dashClusteringType = document.getElementById('dash-clustering_type');
+    const dashPcaSingle = document.getElementById('dash-pca-single');
+    const dashPcaDual = document.getElementById('dash-pca-dual');
+    const dashWeightGroup = document.getElementById('dash-weight-group');
+    const dashNmiGroup = document.getElementById('dash-nmi-group');
+    const dashWeightSlider = document.getElementById('dash-weight-musicnn');
+    const dashWeightMusicnnLabel = document.getElementById('dash-weight-musicnn-label');
+    const dashWeightMaestLabel = document.getElementById('dash-weight-maest-label');
+    const dashStartBtn = document.getElementById('dash-start-clustering-btn');
+
+    function updateDashboardClusteringVisibility() {
+        const mode = dashClusteringType.value;
+        const isSingle = mode === 'musicnn' || mode === 'maest';
+        const isDual = mode === 'hybrid_blend' || mode === 'dual_consensus';
+        const isHybrid = mode === 'hybrid_blend';
+        const isDualConsensus = mode === 'dual_consensus';
+
+        dashPcaSingle.style.display = isSingle ? '' : 'none';
+        dashPcaDual.style.display = isDual ? '' : 'none';
+        dashWeightGroup.style.display = isHybrid ? '' : 'none';
+        dashNmiGroup.style.display = isDualConsensus ? '' : 'none';
+    }
+
+    if (dashClusteringType) {
+        dashClusteringType.addEventListener('change', updateDashboardClusteringVisibility);
+    }
+
+    if (dashWeightSlider) {
+        dashWeightSlider.addEventListener('input', function() {
+            const mn = parseFloat(this.value).toFixed(2);
+            const ma = (1.0 - parseFloat(this.value)).toFixed(2);
+            dashWeightMusicnnLabel.textContent = mn;
+            if (dashWeightMaestLabel) dashWeightMaestLabel.textContent = ma;
+        });
+    }
+
+    async function startDashboardClustering() {
+        if (!dashStartBtn) return;
+        dashStartBtn.disabled = true;
+        dashStartBtn.textContent = 'Starting...';
+        try {
+            const mode = dashClusteringType.value;
+            const isSingle = mode === 'musicnn' || mode === 'maest';
+            const isDual = mode === 'hybrid_blend' || mode === 'dual_consensus';
+            const isHybrid = mode === 'hybrid_blend';
+            const isDualConsensus = mode === 'dual_consensus';
+
+            const payload = {
+                clustering_mode: mode,
+                clustering_method: 'kmeans',
+                auto_parameter_discovery: true,
+                clustering_runs: 100,
+            };
+
+            // PCA values depend on mode
+            if (isSingle) {
+                payload.pca_components_min = parseInt(document.getElementById('dash-pca_musicnn_min')?.value ?? '0');
+                payload.pca_components_max = parseInt(document.getElementById('dash-pca_musicnn_max')?.value ?? '40');
+            }
+            if (isDual) {
+                payload.hybrid_pca_musicnn = parseInt(document.getElementById('dash-pca_musicnn')?.value ?? '20');
+                payload.hybrid_pca_maest = parseInt(document.getElementById('dash-pca_maest')?.value ?? '40');
+            }
+            if (isHybrid) {
+                payload.hybrid_weight_musicnn = parseFloat(dashWeightSlider?.value ?? '0.3');
+                payload.hybrid_weight_maest = 1.0 - parseFloat(dashWeightSlider?.value ?? '0.3');
+            }
+            if (isDualConsensus) {
+                payload.nmi_threshold = parseFloat(document.getElementById('dash-nmi_threshold')?.value ?? '0.3');
+            }
+
+            const res = await fetch('/api/clustering/start', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(payload),
+            });
+            const result = await res.json();
+            if (res.ok && result.task_id) {
+                showMessageBox('Clustering Started', 'Clustering task enqueued: ' + result.task_id);
+            } else {
+                showMessageBox('Error', result.error || 'Failed to start clustering from dashboard.');
+            }
+        } catch (e) {
+            showMessageBox('Error', 'Network error: ' + e.message);
+        } finally {
+            dashStartBtn.disabled = false;
+            dashStartBtn.textContent = 'Start Clustering';
+        }
+    }
+
+    if (dashStartBtn) {
+        dashStartBtn.addEventListener('click', startDashboardClustering);
+    }
+
+    // Fetch defaults from /api/config
+    (async function initDashClustering() {
+        try {
+            const res = await fetch('/api/config');
+            const config = await res.json();
+            if (dashClusteringType && config.clustering_mode) {
+                dashClusteringType.value = config.clustering_mode;
+                updateDashboardClusteringVisibility();
+            }
+            if (dashWeightSlider && config.hybrid_weight_musicnn != null) {
+                dashWeightSlider.value = config.hybrid_weight_musicnn;
+                dashWeightMusicnnLabel.textContent = parseFloat(config.hybrid_weight_musicnn).toFixed(2);
+                if (dashWeightMaestLabel) dashWeightMaestLabel.textContent = parseFloat(config.hybrid_weight_maest || 1.0 - config.hybrid_weight_musicnn).toFixed(2);
+            }
+            if (document.getElementById('dash-pca_musicnn') && config.hybrid_pca_musicnn != null) {
+                document.getElementById('dash-pca_musicnn').value = config.hybrid_pca_musicnn;
+            }
+            if (document.getElementById('dash-pca_maest') && config.hybrid_pca_maest != null) {
+                document.getElementById('dash-pca_maest').value = config.hybrid_pca_maest;
+            }
+            if (document.getElementById('dash-nmi_threshold') && config.nmi_threshold != null) {
+                document.getElementById('dash-nmi_threshold').value = config.nmi_threshold;
+            }
+        } catch (e) {
+            console.warn('Dashboard clustering: could not fetch config defaults', e);
+        }
+    })();
 
     loadDashboard();
     setInterval(loadDashboard, 30000);
