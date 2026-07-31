@@ -52,7 +52,7 @@ except ImportError:
 from rq.job import Job, JobStatus
 from rq.exceptions import NoSuchJobError
 
-from config import (STRATIFIED_GENRES, OTHER_FEATURE_LABELS, MOOD_LABELS, MAEST_MOOD_LABELS, MUSICNN_MOOD_LABELS,
+from config import (STRATIFIED_GENRES, OTHER_FEATURE_LABELS, MOOD_LABELS, MAEST_MOOD_LABELS,
                     MAX_DISTANCE, MAX_SONGS_PER_ARTIST, GMM_COVARIANCE_TYPE, SPECTRAL_N_NEIGHBORS,
                     TOP_K_MOODS_FOR_PURITY_CALCULATION, LN_MOOD_DIVERSITY_STATS,
                     LN_MOOD_PURITY_STATS, LN_MOOD_DIVERSITY_EMBEDING_STATS,
@@ -1548,7 +1548,7 @@ def _get_stratified_song_subset(
         )
 
     random.shuffle(selected)
-return selected
+    return selected
 
 def _get_stratified_song_subset(genre_map, target_per_genre, prev_ids=None, percent_change=0.0):
     """Generates a stratified sample of songs, perturbing a previous subset if provided."""
