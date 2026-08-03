@@ -1434,6 +1434,9 @@ def create_playlist_from_ids(playlist_name: str, track_ids: list, user_creds: di
     except Exception as e:
         raise e
 
+    except Exception as e:
+        raise e
+
 
 def build_and_store_maest_ivf_index(db_conn=None):
     """Build the disk-paged IVF index from the MAEST embedding table.

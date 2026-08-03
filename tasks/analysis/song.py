@@ -889,7 +889,7 @@ def cleanup_maest_session(session, context=""):
 def persist_maest_results(item, analysis, top_moods, embedding, other_features_str):
     """Save MAEST analysis + embedding via app_helper."""
     save_track_analysis_and_embedding(
-        item['Id'], item['Name'], item.get('AlbumArtist', 'Unknown'),
+        catalog_item_id(item), item['Name'], item.get('AlbumArtist', 'Unknown'),
         analysis['tempo'], analysis['key'], analysis['scale'], top_moods, embedding,
         mood_column='maest_mood_vector',
         embedding_table='maest_embedding',

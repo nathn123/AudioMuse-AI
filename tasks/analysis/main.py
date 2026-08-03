@@ -46,6 +46,7 @@ from config import (
     CHROMAPRINT_COLLECTION_ENABLED,
     CHROMAPRINT_BACKFILL_ALBUMS_PER_RUN,
     CHROMAPRINT_BACKFILL_REPORT_SECONDS,
+    ANALYSIS_MODE,
 )
 
 from ..mediaserver import (
@@ -375,10 +376,11 @@ def _run_analysis_server_task_impl(
             total_albums_to_check = len(all_albums)
             reported_total = albums_total or total_albums_to_check
             clap_available = is_clap_available()
+            maest_enabled = ANALYSIS_MODE in ('maest', 'both')
             wm_server_id = server_id or registry.get_default_server_id()
             try:
                 work_map = _ah.load_server_work_map(
-                    wm_server_id, clap_available, LYRICS_ENABLED
+                    wm_server_id, clap_available, LYRICS_ENABLED, maest_enabled
                 )
                 work_map_bulk_ok = True
             except OperationalError:
@@ -391,7 +393,7 @@ def _run_analysis_server_task_impl(
                 )
                 work_map = {}
                 work_map_bulk_ok = False
-            done_bits = _ah.work_done_bits(clap_available, LYRICS_ENABLED)
+            done_bits = _ah.work_done_bits(clap_available, LYRICS_ENABLED, maest_enabled)
             logger.info(
                 "Work map for this server: %d provider tracks already known%s.",
                 len(work_map),
@@ -406,6 +408,7 @@ def _run_analysis_server_task_impl(
             albums_needing_musicnn = 0
             albums_needing_clap = 0
             albums_needing_lyrics = 0
+            albums_needing_maest = 0
             songs_seen = 0
             songs_done = 0
             last_monitor_db_check = float('-inf')
@@ -580,7 +583,7 @@ def _run_analysis_server_task_impl(
                 else:
                     try:
                         am = _ah.album_work_masks(
-                            ids, wm_server_id, clap_available, LYRICS_ENABLED
+                            ids, wm_server_id, clap_available, LYRICS_ENABLED, maest_enabled
                         )
                     except OperationalError:
                         raise
@@ -598,7 +601,8 @@ def _run_analysis_server_task_impl(
                     needs_musicnn_analysis,
                     needs_clap_analysis,
                     needs_lyrics_analysis,
-                ) = _ah.album_feature_needs(masks, done_bits, clap_available, LYRICS_ENABLED)
+                    needs_maest_analysis,
+                ) = _ah.album_feature_needs(masks, done_bits, clap_available, LYRICS_ENABLED, maest_enabled)
                 songs_seen += len(tracks)
                 songs_done += album_done
 
@@ -625,6 +629,7 @@ def _run_analysis_server_task_impl(
                 albums_needing_musicnn += int(needs_musicnn_analysis)
                 albums_needing_clap += int(needs_clap_analysis)
                 albums_needing_lyrics += int(needs_lyrics_analysis)
+                albums_needing_maest += int(needs_maest_analysis)
                 report_progress()
 
             if (
@@ -678,10 +683,11 @@ def _run_analysis_server_task_impl(
             logger.info(
                 "Phase complete. Albums: %d launched, %d skipped of %d, %d failed. "
                 "Songs: %d sent for analysis, %d already analyzed of %d. "
-                "Feature albums: MusiCNN %d, DCLAP %d, Lyrics %d.",
+                "Feature albums: MusiCNN %d, DCLAP %d, Lyrics %d, MAEST %d.",
                 albums_launched, albums_skipped, total_albums_to_check, failed_count,
                 songs_seen - songs_done, songs_done, songs_seen,
                 albums_needing_musicnn, albums_needing_clap, albums_needing_lyrics,
+                albums_needing_maest,
             )
             final_message, phase_status, final_kwargs = _phase_outcome(
                 albums_offset + albums_skipped + albums_completed + albums_work_check_failed,

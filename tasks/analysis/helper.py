@@ -439,12 +439,13 @@ def raise_album_failures(failed_tracks, map_flush_errors, total_tracks_in_album)
         raise RuntimeError(" | ".join(failure_reasons))
 
 
-def album_feature_needs(masks, done_bits, clap_available, lyrics_enabled):
+def album_feature_needs(masks, done_bits, clap_available, lyrics_enabled, maest_enabled=False):
     album_done = sum(1 for m in masks if m & done_bits == done_bits)
     needs_musicnn = any(not m & WORK_MUSICNN for m in masks)
     needs_clap = clap_available and any(not m & WORK_CLAP for m in masks)
     needs_lyrics = lyrics_enabled and any(not m & WORK_LYRICS for m in masks)
-    return album_done, needs_musicnn, needs_clap, needs_lyrics
+    needs_maest = maest_enabled and any(not m & WORK_MAEST for m in masks)
+    return album_done, needs_musicnn, needs_clap, needs_lyrics, needs_maest
 
 
 WORK_MUSICNN = 1
@@ -454,13 +455,15 @@ WORK_CLAP = 2
 
 
 WORK_LYRICS = 4
+WORK_MAEST = 8
 
 
-def work_done_bits(clap_available, lyrics_enabled):
+def work_done_bits(clap_available, lyrics_enabled, maest_enabled=False):
     return (
         WORK_MUSICNN
         | (WORK_CLAP if clap_available else 0)
         | (WORK_LYRICS if lyrics_enabled else 0)
+        | (WORK_MAEST if maest_enabled else 0)
     )
 
 
@@ -470,11 +473,12 @@ _WORK_ANALYZED = (
 )
 
 
-def _work_feature_parts(clap_available, lyrics_enabled, key_column):
+def _work_feature_parts(clap_available, lyrics_enabled, maest_enabled, key_column):
     selects, joins = [], []
     for enabled, table, alias in (
         (clap_available, 'clap_embedding', 'c'),
         (lyrics_enabled, 'lyrics_embedding', 'l'),
+        (maest_enabled, 'maest_embedding', 'm2'),
     ):
         if enabled:
             selects.append(f"({alias}.item_id IS NOT NULL)")
@@ -484,13 +488,15 @@ def _work_feature_parts(clap_available, lyrics_enabled, key_column):
     return selects, " ".join(joins)
 
 
-def _apply_work_bits(work_map, provider_id, has_musicnn, has_clap, has_lyrics):
+def _apply_work_bits(work_map, provider_id, has_musicnn, has_clap, has_lyrics, has_maest=False):
     key = str(provider_id)
     mask = WORK_MUSICNN if has_musicnn else 0
     if has_clap:
         mask |= WORK_CLAP
     if has_lyrics:
         mask |= WORK_LYRICS
+    if has_maest:
+        mask |= WORK_MAEST
     work_map[key] = work_map.get(key, 0) | mask
 
 
@@ -501,13 +507,18 @@ def _work_map_scan(cur, sql, params, work_map, chunk_size):
         rows = cur.fetchall()
         if not rows:
             return
-        for provider_id, has_musicnn, has_clap, has_lyrics in rows:
-            _apply_work_bits(work_map, provider_id, has_musicnn, has_clap, has_lyrics)
+        for row in rows:
+            provider_id = row[0]
+            has_musicnn = row[1]
+            has_clap = row[2] if len(row) > 2 else False
+            has_lyrics = row[3] if len(row) > 3 else False
+            has_maest = row[4] if len(row) > 4 else False
+            _apply_work_bits(work_map, provider_id, has_musicnn, has_clap, has_lyrics, has_maest)
         last = str(rows[-1][0])
 
 
-def _work_sql(clap_available, lyrics_enabled):
-    mapped_selects, mapped_joins = _work_feature_parts(clap_available, lyrics_enabled, 'm.item_id')
+def _work_sql(clap_available, lyrics_enabled, maest_enabled=False):
+    mapped_selects, mapped_joins = _work_feature_parts(clap_available, lyrics_enabled, maest_enabled, 'm.item_id')
     mapped_sql = (
         "SELECT m.provider_track_id, "
         f"(e.item_id IS NOT NULL AND {_WORK_ANALYZED}), {', '.join(mapped_selects)} "
@@ -517,7 +528,7 @@ def _work_sql(clap_available, lyrics_enabled):
         f"{mapped_joins} "
         "WHERE m.server_id = %s"
     )
-    legacy_selects, legacy_joins = _work_feature_parts(clap_available, lyrics_enabled, 's.item_id')
+    legacy_selects, legacy_joins = _work_feature_parts(clap_available, lyrics_enabled, maest_enabled, 's.item_id')
     legacy_sql = (
         f"SELECT s.item_id, TRUE, {', '.join(legacy_selects)} "
         "FROM score s "
@@ -534,8 +545,8 @@ def _is_default_server(server_id):
     return server_id is None or str(server_id) == str(registry.get_default_server_id() or '')
 
 
-def load_server_work_map(server_id, clap_available, lyrics_enabled, chunk_size=20000):
-    mapped_sql, legacy_sql = _work_sql(clap_available, lyrics_enabled)
+def load_server_work_map(server_id, clap_available, lyrics_enabled, maest_enabled=False, chunk_size=20000):
+    mapped_sql, legacy_sql = _work_sql(clap_available, lyrics_enabled, maest_enabled)
     work_map = {}
     with get_db() as conn, conn.cursor() as cur:
         if server_id:
@@ -554,11 +565,11 @@ def load_server_work_map(server_id, clap_available, lyrics_enabled, chunk_size=2
     return work_map
 
 
-def album_work_masks(provider_ids, server_id, clap_available, lyrics_enabled):
+def album_work_masks(provider_ids, server_id, clap_available, lyrics_enabled, maest_enabled=False):
     ids = _str_ids(provider_ids)
     if not ids:
         return {}
-    mapped_sql, legacy_sql = _work_sql(clap_available, lyrics_enabled)
+    mapped_sql, legacy_sql = _work_sql(clap_available, lyrics_enabled, maest_enabled)
     work_map = {}
     with get_db() as conn, conn.cursor() as cur:
         if server_id:
