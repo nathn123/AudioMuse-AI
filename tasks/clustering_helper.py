@@ -897,6 +897,7 @@ _LN_STATS_BY_MODE = {
     'musicnn': {'diversity': LN_MOOD_DIVERSITY_STATS, 'purity': LN_MOOD_PURITY_STATS},
     'maest':   {'diversity': LN_MAEST_GENRE_DIVERSITY_STATS, 'purity': LN_MAEST_GENRE_PURITY_STATS},
     'hybrid_blend': {'diversity': LN_HYBRID_MOOD_DIVERSITY_STATS, 'purity': LN_HYBRID_MOOD_PURITY_STATS},
+    'dual_consensus': {'diversity': LN_HYBRID_MOOD_DIVERSITY_STATS, 'purity': LN_HYBRID_MOOD_PURITY_STATS},
 }
 
 

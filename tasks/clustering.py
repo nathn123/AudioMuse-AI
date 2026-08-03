@@ -1144,7 +1144,7 @@ def _cluster_one_server(
             if clustering_mode_param == 'maest':
                 ch.LN_MAEST_GENRE_DIVERSITY_STATS.update(div_stats)
                 ch.LN_MAEST_GENRE_PURITY_STATS.update(pur_stats)
-            elif clustering_mode_param == 'hybrid_blend':
+            elif clustering_mode_param in ('hybrid_blend', 'dual_consensus'):
                 ch.LN_HYBRID_MOOD_DIVERSITY_STATS.update(div_stats)
                 ch.LN_HYBRID_MOOD_PURITY_STATS.update(pur_stats)
             else:
