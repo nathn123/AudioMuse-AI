@@ -66,10 +66,6 @@ from config import (STRATIFIED_GENRES, OTHER_FEATURE_LABELS, MOOD_LABELS, MAEST_
                     HYBRID_WEIGHT_MUSICNN, HYBRID_WEIGHT_MAEST)
 from .commons import score_vector
 
-# Import AI naming for playlist helpers
-from tasks.ai.api import get_ai_playlist_name
-from tasks.ai.prompts import creative_prompt_template
-
 # Low-level DB / queue primitives, imported directly rather than via the
 # app_helper facade (keeps this helper decoupled from the blueprint layer).
 from database import get_tracks_by_ids, get_score_data_by_ids, get_task_info_from_db
@@ -111,6 +107,10 @@ def _try_ai_name_playlist(original_name, songs, centroids, ai_provider,
                           ollama_url, ollama_model, openai_url, openai_model, openai_key,
                           gemini_key, gemini_model, mistral_key, mistral_model):
     """Attempt AI naming; return the original name on failure."""
+    # Import AI naming for playlist helpers
+    from .ai.api import get_ai_playlist_name
+    from .ai.prompts import creative_prompt_template
+
     ai_config = {
         'provider': ai_provider,
         'ollama_url': ollama_url, 'ollama_model': ollama_model,
@@ -170,10 +170,10 @@ def _perform_single_clustering_iteration(
                 if clustering_mode == "maest":
                     iteration_mood_labels = MAEST_MOOD_LABELS
                 else:
-                    iteration_mood_labels = MUSICNN_MOOD_LABELS
+                    iteration_mood_labels = MOOD_LABELS
 
                 valid_tracks, X_feat_musicnn, X_feat_maest = _prepare_iteration_data_both(
-                    item_ids_for_subset, MUSICNN_MOOD_LABELS, MAEST_MOOD_LABELS, log_prefix, run_idx
+                    item_ids_for_subset, MOOD_LABELS, MAEST_MOOD_LABELS, log_prefix, run_idx
                 )
                 if valid_tracks is None:
                     return {"fitness_score": -1.0}
@@ -198,7 +198,7 @@ def _perform_single_clustering_iteration(
                     data_to_cluster = (X_feat_musicnn, X_feat_maest)  # Tuple marker
                     use_hybrid_internal_pca = True
                     X_feat_orig = X_feat_musicnn
-                    active_mood_labels = MUSICNN_MOOD_LABELS
+                    active_mood_labels = MOOD_LABELS
 
                 else:  # dual_consensus
                     if X_feat_musicnn is None or X_feat_musicnn.shape[0] == 0:
@@ -210,7 +210,7 @@ def _perform_single_clustering_iteration(
                     data_to_cluster = (X_feat_musicnn, X_feat_maest)  # Tuple marker
                     use_hybrid_internal_pca = False
                     X_feat_orig = X_feat_musicnn
-                    active_mood_labels = MUSICNN_MOOD_LABELS
+                    active_mood_labels = MOOD_LABELS
 
             else:
                 # Default musicnn mode: use existing logic
@@ -324,7 +324,7 @@ def _perform_single_clustering_iteration(
                     fused_centers[cid] = data_for_metrics[mask].mean(axis=0)
 
             # Build HybridScaler for centroid inversion during naming
-            n_musicnn_dims = 2 + len(MUSICNN_MOOD_LABELS) + len(OTHER_FEATURE_LABELS)
+            n_musicnn_dims = 2 + len(MOOD_LABELS) + len(OTHER_FEATURE_LABELS)
             params['_hybrid_pca_models'] = {
                 'musicnn': {'scaler': scaler_mn, 'pca': pca_mn, 'output_dims': reduced_mn.shape[1]},
                 'maest': {'scaler': scaler_ma, 'pca': pca_ma, 'output_dims': reduced_ma.shape[1]},
@@ -959,7 +959,7 @@ def _calibrate_ln_stats(num_samples=2000, num_fast_iterations=20, clustering_mod
             rows = cur.fetchall()
 
         # Build feature vectors — query already aliases maest_mood_vector AS mood_vector
-        mood_labels = MAEST_MOOD_LABELS if clustering_mode == 'maest' else MUSICNN_MOOD_LABELS
+        mood_labels = MAEST_MOOD_LABELS if clustering_mode == 'maest' else MOOD_LABELS
         valid_tracks, feat_list = [], []
         for row_data in (dict(r) for r in rows if r):
             try:
@@ -1121,7 +1121,7 @@ def _format_and_score_iteration_result(
                 a_pca_h = a_model.get('pca')
                 
                 # Get original musicnn dimensionality (58: 2 + 55 mood labels + other features)
-                n_musicnn_dims = 2 + len(MUSICNN_MOOD_LABELS) + len(OTHER_FEATURE_LABELS)
+                n_musicnn_dims = 2 + len(MOOD_LABELS) + len(OTHER_FEATURE_LABELS)
                 
                 # Create HybridScaler and invert
                 musicnn_out_dims = m_model.get('output_dims')

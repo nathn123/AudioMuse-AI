@@ -1296,10 +1296,10 @@ def init_db():
                 )
             """)
             cur.execute(
-                "CREATE TABLE IF NOT EXISTS embedding (item_id TEXT PRIMARY KEY, FOREIGN KEY (item_id) REFERENCES score (item_id) ON DELETE CASCADE)"
+                "CREATE TABLE IF NOT EXISTS embedding (item_id TEXT PRIMARY KEY, FOREIGN KEY (item_id) REFERENCES score (item_id) ON DELETE CASCADE ON UPDATE CASCADE)"
             )
             cur.execute(
-                "CREATE TABLE IF NOT EXISTS maest_embedding (item_id TEXT PRIMARY KEY, FOREIGN KEY (item_id) REFERENCES score (item_id) ON DELETE CASCADE)"
+                "CREATE TABLE IF NOT EXISTS maest_embedding (item_id TEXT PRIMARY KEY, FOREIGN KEY (item_id) REFERENCES score (item_id) ON DELETE CASCADE ON UPDATE CASCADE)"
             )
             cur.execute(
                 "SELECT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'maest_embedding' AND column_name = 'embedding')"

@@ -663,7 +663,7 @@ def _relabel_item_ids(cur, lyrics_exists):
     halves the write volume on the embedding tables, which dominate the
     migration time.
     """
-    tables = ["score", "playlist", "embedding", "clap_embedding"]
+    tables = ["score", "playlist", "embedding", "clap_embedding", "maest_embedding"]
     if lyrics_exists:
         tables.append("lyrics_embedding")
     for table in tables:
