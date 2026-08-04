@@ -41,8 +41,6 @@ from config import (
     PER_SONG_MODEL_RELOAD,
     MAEST_MODEL_PATH,
     MAEST_INPUT_NAME,
-    MAEST_OUTPUT_NAMES,
-    MAEST_MOOD_LABELS,
 )
 from database import (
     get_db,

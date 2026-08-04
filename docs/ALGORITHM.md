@@ -1227,6 +1227,79 @@ audio or lyrics.
 
 ---
 
+## 3. Clustering Modes
+
+Clustering no longer operates in only one embedding space. Four modes control which features are clustered and how multiple feature streams are combined, each producing playlists through the same evolutionary search described in [section 5](#5-song-clustering).
+
+### 3.1. Modes overview
+
+| Mode | Feature source | PCA approach | Number of clusterings | Scoring space | Fuse method |
+|------|----------------|--------------|----------------------|---------------|-------------|
+| `musicnn` | 200-dim MusiCNN embedding → mood_vector | Optional global PCA (PCA_COMPONENTS) | Single | mood_vector | N/A |
+| `maest` | 768-dim MAEST embedding → maest_mood_vector | Optional global PCA (PCA_COMPONENTS) | Single | maest_mood_vector | N/A |
+| `hybrid_blend` | Both embeddings independently | Fixed per-stream PCA (HYBRID_PCA_MUSICNN, HYBRID_PCA_MAEST) | Single | Weighted concatenation | Weighted concat → cluster |
+| `dual_consensus` | Both embeddings independently | Fixed per-stream PCA | Two (one per stream) | Per-stream centroids | Co-association matrix → consensus clusters |
+
+### 3.2. Canonical identity
+
+The canonical fingerprint id (`fp_<version><hex>`) is **always** derived from the MusiCNN embedding (200-bit sign signature, see [section 2](#2-catalogue-identity-and-deduplication)). MAEST data is stored under the same canonical id — it never generates its own identity. A track can therefore carry both a `mood_vector` (MusiCNN) and a `maest_mood_vector` (MAEST) under the same `item_id`.
+
+### 3.3. Auto-calibration of LN stats (`AUTO_CALIBRATE_LN_STATS`)
+
+The log-normal statistics used for Z-score normalization of diversity and purity scores (see [section 5.2 — fitness score](#the-fitness-score)) can be auto-calibrated rather than hard-coded:
+
+1. **Sampling**: a representative set of tracks (up to 5000) is loaded from the library.
+2. **Fast KMeans**: a quick KMeans pass (fixed K, small n_init) is run over the sampled feature vectors to produce candidate clusters.
+3. **Estimation**: diversity and purity scores are computed from these clusters, their distribution is log-transformed, and the mean and standard deviation of the logged values are recorded.
+4. **Assignment**: the resulting stats are written to the appropriate `LN_*` environment variable for the active `CLUSTERING_MODE` (e.g. `LN_MAEST_GENRE_DIVERSITY_STATS`, `LN_HYBRID_MOOD_PURITY_STATS`).
+
+When `AUTO_CALIBRATE_LN_STATS` is off, the hard-coded defaults are used directly.
+
+### 3.4. Evolutionary parameter tuning
+
+All four modes share the same evolutionary search framework (explore vs. exploit, elite pool, mutation deltas). In hybrid and dual modes, however, the search also tunes:
+
+- **Per-stream PCA components**: `HYBRID_PCA_MUSICNN` and `HYBRID_PCA_MAEST` are treated as evolvable parameters alongside the global `NUM_CLUSTERS` or `DBSCAN_EPS`.
+- **Fusion weights**: `HYBRID_WEIGHT_MUSICNN` and `HYBRID_WEIGHT_MAEST` are evolvable in hybrid_blend mode (weighted concatenation), dual_consensus mode (co-association weighting), and when building the fused IVF index.
+- **Elite mutation**: the winning parameter sets (elites) are mutated with small random deltas (`MUTATION_INT_ABS_DELTA`, `MUTATION_FLOAT_ABS_DELTA`) to refine the search locally.
+- **Random exploration**: a configurable fraction of iterations generate fresh random parameters instead of mutating elites, controlled by `EXPLOITATION_PROBABILITY_CONFIG`.
+
+### 3.5. HybridScaler inversion for cluster naming
+
+When clustering in `hybrid_blend` mode, the feature vector that is clustered is a **weighted concatenation** of the two independently PCA-reduced embeddings, followed by a `StandardScaler` fit on the concatenated matrix. To name the resulting clusters in human-readable mood/tempo terms:
+
+1. The cluster centroid in the blended space is recorded.
+2. The scaler is **inverted** — the centroid is un-scaled (multiplied by the per-component standard deviation, then shifted by the mean).
+3. The un-scaled centroid is then split back into its MusiCNN and MAEST PCA components.
+4. Each component set is inverted through its own PCA (matrix multiplication by the components' transposed basis) to recover an approximation of the original mood scores.
+5. The MusiCNN-side mood vector is used for tempo band and genre naming (the same deterministic naming pipeline from section 5).
+
+This inversion lets hybrid clusters be named with the same tag-based scheme as single-mode clusters.
+
+### 3.6. Co-association fusion matrix (dual_consensus)
+
+`dual_consensus` runs two **independent clusterings** — one on the MusiCNN feature space, one on the MAEST feature space — and fuses their results via a co-association matrix:
+
+1. **Independent clustering**: each stream is PCA-reduced (fixed components), scaled, and clustered separately (each using its own KMeans or DBSCAN). The two runs use the same stratified sample and the same cluster-count range, but produce different partitions because the feature spaces differ.
+2. **Co-association matrix**: an `N × N` matrix (N = number of tracks in the sample) is built where cell `[i, j]` is `1` if tracks `i` and `j` belong to the same cluster in **both** partitions (weighted 1.0), or only in one partition (weighted `HYBRID_WEIGHT_MUSICNN` or `HYBRID_WEIGHT_MAEST`). This produces a soft affinity score for every pair of tracks.
+3. **Consensus clustering**: the co-association matrix is treated as a similarity matrix and clustered with a final KMeans pass, producing the consensus partitions. The number of clusters for this final pass is the average of the two per-stream cluster counts.
+4. **Scoring**: the resulting consensus clusters are scored in **both** feature spaces independently, and the fitness is the weighted average of the two scores (using `HYBRID_WEIGHT_MUSICNN` / `HYBRID_WEIGHT_MAEST`).
+
+This mode is the most computationally expensive because it materializes the full co-association matrix (O(N²) memory), but it produces partitions that respect both feature spaces without forcing them into one blended vector.
+
+### 3.7. Environment Variable Configuration
+
+- `ANALYSIS_MODE`: which embedder runs during song analysis.
+- `CLUSTERING_MODE`: which feature space or fusion strategy is used.
+- `HYBRID_PCA_MUSICNN`, `HYBRID_PCA_MAEST`: per-stream PCA dimensionality.
+- `HYBRID_WEIGHT_MUSICNN`, `HYBRID_WEIGHT_MAEST`: fusion weights.
+- `INDEX_NAME_MAEST`: IVF index name for MAEST embeddings.
+- `FUSION_WEIGHT_MUSICNN_DEFAULT`: default fusion weight for the /api/similar_tracks endpoint.
+- `AUTO_CALIBRATE_LN_STATS`: whether to auto-calibrate log-normal stats.
+- `LN_MAEST_GENRE_DIVERSITY_STATS`, `LN_MAEST_GENRE_PURITY_STATS`: LN stats for MAEST mode.
+- `LN_HYBRID_MOOD_DIVERSITY_STATS`, `LN_HYBRID_MOOD_PURITY_STATS`: LN stats for hybrid/dual modes.
+- `SEQUENTIAL_ANALYSIS`: load models one at a time to save VRAM.
+
 ## 6. Playlist from Similar Song
 
 This feature builds a playlist around one seed song.

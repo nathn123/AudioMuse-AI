@@ -59,8 +59,6 @@ def dashboard_page():
       200:
         description: HTML page rendered.
     """
-    import config
-
     analysis_mode = getattr(config, 'ANALYSIS_MODE', 'musicnn')
     embedder_type_display = {
         'musicnn': 'MUSICNN',

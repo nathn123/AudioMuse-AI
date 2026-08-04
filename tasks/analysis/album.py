@@ -43,7 +43,6 @@ from config import (
     LYRICS_ENABLED,
     ANALYSIS_MONITOR_DB_INTERVAL,
     CHROMAPRINT_COLLECTION_ENABLED,
-    ANALYSIS_MODE,
 )
 
 from flask_app import app
@@ -79,10 +78,6 @@ from .song import (
     cleanup_musicnn_sessions,
     cleanup_optional_models,
     robust_load_audio_with_fallback,
-    prepare_maest_melspectrogram,
-    run_maest_inference,
-    load_maest_session,
-    cleanup_maest_session,
     persist_maest_results,
     analyze_track_maest,
 )

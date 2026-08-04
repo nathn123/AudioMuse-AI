@@ -28,7 +28,7 @@ import random
 import logging
 import time
 import numpy as np
-from collections import Counter, defaultdict
+from collections import defaultdict
 # time, re, and cdist imports moved to clustering_postprocessing.py
 
 # Sklearn imports
@@ -162,16 +162,11 @@ def _perform_single_clustering_iteration(
         data_to_cluster = None
         scaler = None
         use_hybrid_internal_pca = False
-        
+
         with app.app_context():
             # Determine which mood labels to use based on clustering mode
             if clustering_mode == "maest" or clustering_mode == "hybrid_blend" or clustering_mode == "dual_consensus":
                 # All dual-data modes share the same data fetch
-                if clustering_mode == "maest":
-                    iteration_mood_labels = MAEST_MOOD_LABELS
-                else:
-                    iteration_mood_labels = MOOD_LABELS
-
                 valid_tracks, X_feat_musicnn, X_feat_maest = _prepare_iteration_data_both(
                     item_ids_for_subset, MOOD_LABELS, MAEST_MOOD_LABELS, log_prefix, run_idx
                 )
@@ -228,7 +223,7 @@ def _perform_single_clustering_iteration(
                     if valid_tracks is None:
                         return {"fitness_score": -1.0}
                     data_to_cluster, scaler = _prepare_and_scale_data(X_feat_orig, X_embed_raw, False)
-        
+
         if data_to_cluster is None:
             logger.error(f"{log_prefix} Iteration {run_idx}: Data for clustering is empty after prep. Cannot proceed.")
             return {"fitness_score": -1.0}
@@ -238,25 +233,40 @@ def _perform_single_clustering_iteration(
         hybrid_pca_models = None
         if use_hybrid_internal_pca and isinstance(data_to_cluster, tuple):
             X_musicnn_raw, X_maest_raw = data_to_cluster
-            
+
             # Use fixed HYBRID_PCA_* values (evolutionary PCA is skipped for hybrid mode)
             m_scaler, m_pca, X_musicnn_pca = _pca_reduce(X_musicnn_raw, hybrid_pca_musicnn, log_prefix, "MusicNN")
             a_scaler, a_pca, X_maest_pca = _pca_reduce(X_maest_raw, hybrid_pca_maest, log_prefix, "MAEST")
-            
+
             if X_musicnn_pca is None or X_maest_pca is None:
                 logger.error(f"{log_prefix} Iteration {run_idx}: PCA reduction failed for hybrid blend.")
                 return {"fitness_score": -1.0}
-            
+
             # Weight-scale and concatenate
             X_musicnn_weighted = X_musicnn_pca * HYBRID_WEIGHT_MUSICNN
             X_maest_weighted = X_maest_pca * HYBRID_WEIGHT_MAEST
             data_to_cluster = np.hstack([X_musicnn_weighted, X_maest_weighted])
-            
+
             # Store PCA models for later inversion (HybridScaler in Task 2b.6)
             hybrid_pca_models = {
                 'musicnn': {'scaler': m_scaler, 'pca': m_pca, 'output_dims': X_musicnn_pca.shape[1]},
                 'maest': {'scaler': a_scaler, 'pca': a_pca, 'output_dims': X_maest_pca.shape[1]}
             }
+
+        # 3. Generate Parameters BEFORE the dual_consensus early-return block,
+        #    because that block needs params (PCA configs, clustering method) to run.
+        params = _generate_evolutionary_parameters(
+            elite_solutions_params_list, exploitation_probability, mutation_config,
+            clustering_method, data_to_cluster, pca_params_ranges,
+            num_clusters_min_max, dbscan_params_ranges, gmm_params_ranges, spectral_params_ranges,
+            log_prefix, run_idx, clustering_mode=clustering_mode
+        )
+
+        # Attach hybrid PCA models to params and disable regular PCA for hybrid mode
+        if hybrid_pca_models:
+            params['_hybrid_pca_models'] = hybrid_pca_models
+            params['_hybrid_weights'] = {'musicnn': HYBRID_WEIGHT_MUSICNN, 'maest': HYBRID_WEIGHT_MAEST}
+            params['pca_config']['enabled'] = False
 
         # ─── Dual Consensus: run both streams independently, fuse ──────────────
         if clustering_mode == "dual_consensus" and isinstance(data_to_cluster, tuple):
@@ -323,8 +333,7 @@ def _perform_single_clustering_iteration(
                 if mask.sum() > 0:
                     fused_centers[cid] = data_for_metrics[mask].mean(axis=0)
 
-            # Build HybridScaler for centroid inversion during naming
-            n_musicnn_dims = 2 + len(MOOD_LABELS) + len(OTHER_FEATURE_LABELS)
+            # Build HybridScaler metadata dict for centroid inversion during naming
             params['_hybrid_pca_models'] = {
                 'musicnn': {'scaler': scaler_mn, 'pca': pca_mn, 'output_dims': reduced_mn.shape[1]},
                 'maest': {'scaler': scaler_ma, 'pca': pca_ma, 'output_dims': reduced_ma.shape[1]},
@@ -339,20 +348,6 @@ def _perform_single_clustering_iteration(
                 clustering_mode=clustering_mode,
             )
 
-        # 3. Generate Parameters: Use evolutionary approach (mutate elite or explore)
-        params = _generate_evolutionary_parameters(
-            elite_solutions_params_list, exploitation_probability, mutation_config,
-            clustering_method, data_to_cluster, pca_params_ranges,
-            num_clusters_min_max, dbscan_params_ranges, gmm_params_ranges, spectral_params_ranges,
-            log_prefix, run_idx, clustering_mode=clustering_mode
-        )
-
-        # Attach hybrid PCA models to params and disable regular PCA for hybrid mode
-        if hybrid_pca_models:
-            params['_hybrid_pca_models'] = hybrid_pca_models
-            params['_hybrid_weights'] = {'musicnn': HYBRID_WEIGHT_MUSICNN, 'maest': HYBRID_WEIGHT_MAEST}
-            params['pca_config']['enabled'] = False
-        
         # 4. Apply PCA if specified by the generated parameters (skipped for hybrid_blend)
         pca_model, data_after_pca = None, data_to_cluster
         if params['pca_config']['enabled']:
@@ -380,7 +375,7 @@ def _perform_single_clustering_iteration(
             clustering_mode=clustering_mode
         )
 
-    except Exception as e:
+    except Exception:
         logger.error(f"{log_prefix} Iteration {run_idx} failed critically", exc_info=True)
         raise
 
@@ -412,7 +407,7 @@ def _prepare_iteration_data(item_ids, active_mood_labels, use_embeddings, log_pr
 
 def _prepare_iteration_data_both(item_ids, musicnn_labels, maest_labels, log_prefix, run_idx):
     """Returns (valid_tracks, X_feat_musicnn, X_feat_maest).
-    
+
     Both feature vectors from the same track subset.
     Either can be None if that model's data column is empty for all tracks.
     """
@@ -433,12 +428,12 @@ def _prepare_iteration_data_both(item_ids, musicnn_labels, maest_labels, log_pre
 
 class HybridScaler:
     """Handles inversion of hybrid-space vectors back to original musicnn feature space.
-    
+
     The hybrid blend process is:
     1. Scale musicnn features -> PCA-reduce -> weight-scale
-    2. Scale maest features -> PCA-reduce -> weight-scale  
+    2. Scale maest features -> PCA-reduce -> weight-scale
     3. Concatenate weighted vectors
-    
+
     To invert for naming, we need to:
     1. Split hybrid vector into musicnn and maest portions
     2. Un-weight each portion (divide by weights)
@@ -448,7 +443,7 @@ class HybridScaler:
     """
     def __init__(self, m_scaler, m_pca, a_scaler, a_pca, n_musicnn_dims):
         """Initialize with the PCA models and scalers from hybrid blending.
-        
+
         Args:
             m_scaler: StandardScaler for musicnn features
             m_pca: PCA model for musicnn features (can be None if no PCA applied)
@@ -461,50 +456,47 @@ class HybridScaler:
         self.a_scaler = a_scaler
         self.a_pca = a_pca
         self.n_musicnn_dims = n_musicnn_dims
-        
+
     def inverse_transform(self, hybrid_vec, musicnn_output_dims=None, maest_output_dims=None):
         """Invert a hybrid-space vector back to original musicnn feature space.
-        
+
         Args:
             hybrid_vec: 1D numpy array in hybrid blended space
             musicnn_output_dims: PCA output dims for musicnn (from stored config)
             maest_output_dims: PCA output dims for maest (from stored config)
-            
+
         Returns:
             1D numpy array in original musicnn feature space (for naming)
         """
         if hybrid_vec is None or len(hybrid_vec) == 0:
             return None
-            
+
         hybrid_vec = np.array(hybrid_vec).flatten()
         # Use provided dims or fall back to model attributes
         n_musicnn_pca = musicnn_output_dims if musicnn_output_dims is not None else (self.m_pca.n_components_ if self.m_pca else self.n_musicnn_dims)
-        n_maest_pca = maest_output_dims if maest_output_dims is not None else (self.a_pca.n_components_ if self.a_pca else 0)
-        
-        # Split hybrid vector into musicnn and maest portions
+
+        # Split hybrid vector into musicnn portion for inversion (maest portion not needed for naming)
         musicnn_portion = hybrid_vec[:n_musicnn_pca]
-        maest_portion = hybrid_vec[n_musicnn_pca:n_musicnn_pca + n_maest_pca]
-        
+
         # Un-weight (reverse the weight scaling from lines 224-225)
         musicnn_unweighted = musicnn_portion / HYBRID_WEIGHT_MUSICNN if HYBRID_WEIGHT_MUSICNN > 0 else musicnn_portion
-        maest_unweighted = maest_portion / HYBRID_WEIGHT_MAEST if HYBRID_WEIGHT_MAEST > 0 else maest_portion
-        
+
         # Inverse PCA for musicnn (to get back to scaled space)
         if self.m_pca is not None:
             musicnn_scaled = self.m_pca.inverse_transform(musicnn_unweighted.reshape(1, -1)).flatten()
         else:
             musicnn_scaled = musicnn_unweighted
-            
+
         # Inverse scale for musicnn (to get back to original space)
         if self.m_scaler is not None:
             musicnn_original = self.m_scaler.inverse_transform(musicnn_scaled.reshape(1, -1)).flatten()
         else:
             musicnn_original = musicnn_scaled
-            
+
         # Truncate to original musicnn dimensions if needed
         if len(musicnn_original) > self.n_musicnn_dims:
             musicnn_original = musicnn_original[:self.n_musicnn_dims]
-            
+
         return musicnn_original
 
 
@@ -873,9 +865,10 @@ def _apply_clustering_model(data, method_config, log_prefix, run_idx):
 
         return labels, centers, model
 
-    except Exception as e:
+    except Exception:
         logger.error(f"{log_prefix} Iteration {run_idx}: Clustering model failed for method {method}", exc_info=True)
         return None, None, None
+
 
 def _get_feature_centroid_for_embedding_cluster(label_id, labels, X_feat_orig):
     """
@@ -885,7 +878,7 @@ def _get_feature_centroid_for_embedding_cluster(label_id, labels, X_feat_orig):
     cluster_indices = np.where(labels == label_id)[0]
     if len(cluster_indices) == 0:
         return None
-    
+
     feature_vectors_in_cluster = X_feat_orig[cluster_indices]
     feature_centroid = np.mean(feature_vectors_in_cluster, axis=0)
     return feature_centroid
@@ -933,10 +926,6 @@ def _calibrate_ln_stats(num_samples=2000, num_fast_iterations=20, clustering_mod
 
     Returns None when there isn't enough data.
     """
-    import numpy as np
-    from sklearn.cluster import KMeans
-    from sklearn.preprocessing import StandardScaler
-
     try:
         # Fetch sample data via score_vector-compatible query
         from database import get_db
@@ -1032,7 +1021,7 @@ def _calibrate_ln_stats(num_samples=2000, num_fast_iterations=20, clustering_mod
 
 def _format_and_score_iteration_result(
     labels, valid_tracks, X_feat_orig, data_for_metrics,
-    centers, model, pca, scaler, active_moods, 
+    centers, model, pca, scaler, active_moods,
     params, max_songs_per_cluster, run_idx, use_embeddings, score_weights, log_prefix, clustering_mode='musicnn'):
     """
     Packages all results from the iteration into a dictionary and calculates the final fitness score.
@@ -1064,7 +1053,7 @@ def _format_and_score_iteration_result(
         if cid == -1: continue
         cluster_tracks_info = [t_info for t_info in track_info_list if t_info["label"] == cid and t_info["distance"] <= MAX_DISTANCE]
         if not cluster_tracks_info: continue
-        
+
         cluster_tracks_info.sort(key=lambda x: x["distance"])
         # Track per-artist counts using a normalized author key. Treat MAX_SONGS_PER_ARTIST <= 0
         # or None as DISABLED (no cap), consistent with other modules (path_manager/ivf_manager).
@@ -1086,7 +1075,7 @@ def _format_and_score_iteration_result(
 
             if max_songs_per_cluster > 0 and len(selected_tracks_for_playlist) >= max_songs_per_cluster:
                 break
-        
+
         for t_item_info_final in selected_tracks_for_playlist:
             item_id_val, title_val, author_val = t_item_info_final["row"]["item_id"], t_item_info_final["row"]["title"], t_item_info_final["row"]["author"]
             filtered_clusters[cid].append((item_id_val, title_val, author_val))
@@ -1102,11 +1091,11 @@ def _format_and_score_iteration_result(
     for label_id, songs_list in filtered_clusters.items():
         if songs_list and label_id in centers:
             center_vec = centers[label_id] # This is the vector in the clustered space
-            
+
             # Check if this is hybrid mode and we need to invert the centroid
             hybrid_pca_models = params.get('_hybrid_pca_models')
             is_hybrid_mode = bool(hybrid_pca_models)
-            
+
             if use_embeddings:
                 feature_centroid_vec = _get_feature_centroid_for_embedding_cluster(label_id, labels, X_feat_orig)
                 if feature_centroid_vec is None: continue
@@ -1120,10 +1109,10 @@ def _format_and_score_iteration_result(
                 m_pca_h = m_model.get('pca')
                 a_scaler_h = a_model.get('scaler')
                 a_pca_h = a_model.get('pca')
-                
+
                 # Get original musicnn dimensionality (58: 2 + 55 mood labels + other features)
                 n_musicnn_dims = 2 + len(MOOD_LABELS) + len(OTHER_FEATURE_LABELS)
-                
+
                 # Create HybridScaler and invert
                 musicnn_out_dims = m_model.get('output_dims')
                 maest_out_dims = a_model.get('output_dims')
@@ -1142,7 +1131,7 @@ def _format_and_score_iteration_result(
             while temp_name in named_playlists:
                 temp_name = f"{name}_{suffix}"
                 suffix += 1
-            
+
             named_playlists[temp_name] = songs_list
             playlist_centroids[temp_name] = centroid_details
             # *** NEW: Store the mapping from the final unique name to the centroid vector ***
@@ -1153,7 +1142,7 @@ def _format_and_score_iteration_result(
                 if predominant_mood_key:
                     current_mood_score = centroid_details.get(predominant_mood_key, 0.0)
                     unique_predominant_mood_scores[predominant_mood_key] = max(unique_predominant_mood_scores.get(predominant_mood_key, 0.0), current_mood_score)
-            
+
             centroid_other_features = {lk: centroid_details.get(lk, 0.0) for lk in OTHER_FEATURE_LABELS if lk in centroid_details}
             if centroid_other_features:
                 predominant_other_key = max(centroid_other_features, key=centroid_other_features.get, default=None)
@@ -1181,7 +1170,7 @@ def _format_and_score_iteration_result(
     mean_div, sd_div = _diversity_stats.get("mean"), _diversity_stats.get("sd")
     if mean_div is not None and sd_div is not None and sd_div > 1e-9:
         metrics['mood_diversity'] = (ln_mood_diversity - mean_div) / sd_div
-        
+
     raw_other_diversity_score = sum(unique_predominant_other_feature_scores.values())
     ln_other_diversity = np.log1p(raw_other_diversity_score)
     other_div_stats = LN_OTHER_FEATURES_DIVERSITY_STATS
@@ -1194,7 +1183,7 @@ def _format_and_score_iteration_result(
         for name, songs in named_playlists.items():
             centroid_data = playlist_centroids.get(name)
             if not centroid_data or not songs: continue
-            
+
             sorted_moods = sorted([(m,s) for m,s in centroid_data.items() if m in MOOD_LABELS], key=lambda item: item[1], reverse=True)
             top_moods = [m for m, s in sorted_moods[:TOP_K_MOODS_FOR_PURITY_CALCULATION] if s > 0.01]
             if not top_moods: continue
@@ -1224,7 +1213,7 @@ def _format_and_score_iteration_result(
     mean_pur, sd_pur = _purity_stats.get("mean"), _purity_stats.get("sd")
     if mean_pur is not None and sd_pur is not None and sd_pur > 1e-9:
         metrics['mood_purity'] = (ln_mood_purity - mean_pur) / sd_pur
-        
+
     all_other_feature_purities = []
     if named_playlists:
         for name, songs in named_playlists.items():
@@ -1233,7 +1222,7 @@ def _format_and_score_iteration_result(
 
             other_features = {k: v for k, v in centroid_data.items() if k in OTHER_FEATURE_LABELS}
             if not other_features: continue
-            
+
             predominant_other = max(other_features, key=other_features.get, default=None)
             if not predominant_other or other_features[predominant_other] < OTHER_FEATURE_PREDOMINANCE_THRESHOLD_FOR_PURITY:
                 continue
@@ -1263,7 +1252,7 @@ def _format_and_score_iteration_result(
 
     # --- 4. Calculate Final Score ---
     final_score = sum(score_weights.get(k, 0) * v for k, v in metrics.items())
-    
+
     log_message = (
         f"{log_prefix} Iteration {run_idx}: Scores -> "
         f"MoodDiv: {metrics['mood_diversity']:.2f} (raw: {raw_mood_diversity_score:.2f}), "
@@ -1309,21 +1298,21 @@ def _name_cluster(centroid_vector, pca_model, pca_enabled, mood_labels, scaler):
         interpreted_vector = scaler.inverse_transform(vec)[0]
     else:
         interpreted_vector = centroid_vector
-    
+
     # --- Extract features from the vector ---
     tempo_val = interpreted_vector[0]
     mood_values = interpreted_vector[2 : 2 + len(mood_labels)]
-    
+
     # --- Build Name Components ---
     tempo_label = "Slow" if tempo_val < 0.33 else "Medium" if tempo_val < 0.66 else "Fast"
-    
+
     if len(mood_values) > 0 and np.sum(mood_values) > 0:
         top_mood_indices = np.argsort(mood_values)[::-1][:TOP_MOODS_IN_NAME]
         mood_names = [mood_labels[i].title() for i in top_mood_indices if i < len(mood_labels) and mood_values[i] > 0.01]
         mood_part = "_".join(mood_names) if mood_names else "Mixed"
     else:
         mood_part = "Mixed"
-    
+
     base_name = f"{mood_part}_{tempo_label}"
 
     # --- Extract "Other Features" and add them to the name and details dict ---
@@ -1339,7 +1328,7 @@ def _name_cluster(centroid_vector, pca_model, pca_enabled, mood_labels, scaler):
                 score = float(other_feature_values[i])
                 details[label] = score
                 other_feature_scores_dict[label] = score
-        
+
         if other_feature_scores_dict:
             prominent_features = sorted(
                 [(feature, score) for feature, score in other_feature_scores_dict.items() if score >= OTHER_FEATURE_THRESHOLD_FOR_NAME],
@@ -1351,14 +1340,14 @@ def _name_cluster(centroid_vector, pca_model, pca_enabled, mood_labels, scaler):
                 appended_other_features_str = "_" + "_".join(features_to_add)
 
     final_name = f"{base_name}{appended_other_features_str}"
-    
+
     return final_name, details
 
 # --- Other Helpers ---
 
 def get_job_result_safely(job_id, parent_task_id, task_type="child task"):
     """Safely retrieves the result of an RQ job, checking both RQ and the database.
-    
+
     Always returns a dict with the same shape as the batch function's return value
     (contains 'status', 'best_result_from_batch', 'iterations_completed_in_batch',
     'final_subset_track_ids') so the caller can use a single code path, or None on failure.
@@ -1501,85 +1490,6 @@ def _select_tracks_for_genre(
         chosen.extend(reused)
         selected_ids.update(track['item_id'] for track in reused)
     return chosen
-
-
-def _get_stratified_song_subset(
-    genre_map,
-    target_per_genre,
-    prev_ids=None,
-    percent_change=0.0,
-):
-    tracks_by_id, genre_tracks = _regroup_tracks_by_primary_genre(genre_map)
-
-    desired_size = min(max(0, int(CLUSTERING_SUBSET_SONGS)), len(tracks_by_id))
-    if desired_size == 0:
-        return []
-
-    quotas = _calculate_stratified_quotas(
-        genre_tracks,
-        desired_size,
-        target_per_genre,
-    )
-
-    known_quota_total = sum(quotas.values())
-    if known_quota_total < desired_size:
-        other_capacity = len(genre_tracks.get('__other__', []))
-        quotas['__other__'] = min(
-            other_capacity,
-            desired_size - known_quota_total,
-        )
-
-    previous_ids = set(prev_ids or [])
-    change_fraction = min(1.0, max(0.0, float(percent_change)))
-    rotate = prev_ids is not None
-    selected, selected_ids = [], set()
-
-    for genre, quota in quotas.items():
-        if quota <= 0:
-            continue
-        selected.extend(
-            _select_tracks_for_genre(
-                genre_tracks.get(genre, []),
-                quota,
-                previous_ids,
-                change_fraction,
-                selected_ids,
-                rotate,
-            )
-        )
-
-    random.shuffle(selected)
-    return selected
-
-def _get_stratified_song_subset(genre_map, target_per_genre, prev_ids=None, percent_change=0.0):
-    """Generates a stratified sample of songs, perturbing a previous subset if provided."""
-    new_subset, new_ids = [], set()
-    if prev_ids and percent_change > 0:
-        sample_size = int(len(prev_ids) * (1.0 - percent_change))
-        if len(prev_ids) > sample_size:
-            kept_ids = set(random.sample(prev_ids, sample_size))
-        else:
-            kept_ids = set(prev_ids)
-    else:
-        kept_ids = set()
-    
-    id_to_track_map = {t['item_id']: t for g_list in genre_map.values() for t in g_list}
-    for track_id in kept_ids:
-        if track_id in id_to_track_map:
-            new_subset.append(id_to_track_map[track_id])
-            new_ids.add(track_id)
-
-    for genre in STRATIFIED_GENRES:
-        current_genre_count = sum(1 for t in new_subset if _get_track_primary_genre(t) == genre)
-        needed = target_per_genre - current_genre_count
-        if needed > 0:
-            candidates = [t for t in genre_map.get(genre, []) if t['item_id'] not in new_ids]
-            if candidates:
-                added_tracks = random.sample(candidates, min(needed, len(candidates)))
-                new_subset.extend(added_tracks)
-                for t in added_tracks: new_ids.add(t['item_id'])
-    random.shuffle(new_subset)
-    return new_subset
 
 def _get_track_primary_genre(track_data):
     """Helper to determine the primary stratified genre for a track."""

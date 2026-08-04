@@ -47,7 +47,7 @@ def _fuse_coassociation(
     if n == 0:
         return np.array([], dtype=int)
 
-    # Propogate noise labels — any track marked -1 by either stream stays -1
+    # Propagate noise labels — any track marked -1 by either stream stays -1
     noise_mask = (labels_a == -1) | (labels_b == -1)
 
     if n > _COASSOC_MAX_TRACKS:
@@ -94,8 +94,6 @@ def _fuse_voting(labels_a, labels_b, X_a, X_b, weight_a, weight_b, noise_mask):
     confidence (proximity to cluster center). Falls back to majority if
     confidence is equal.
     """
-    from sklearn.metrics.pairwise import euclidean_distances
-
     n = len(labels_a)
     fused = np.full(n, -1, dtype=int)
 

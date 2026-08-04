@@ -68,6 +68,22 @@ These parameters can be left as-is:
 | `DASHBOARD_BROWSE_PAGE_SIZE` | Rows per page in the Song/Artist/Album browse view opened from the dashboard.                | `100` |
 | `DASHBOARD_BROWSE_MAX_OFFSET` | Deepest OFFSET a browse query may reach. Past this the API stops paging and asks you to refine with search/filters, so a 1M-row catalogue cannot be hit with a pathological deep-page scan. | `50000` |
 | `TZ`     | Set the time zone of all containers (Flask, worker, Redis and PostgreSQL) | `UTC` |
+| **MAEST Analysis & Clustering** | | |
+| `ANALYSIS_MODE` | Which embedder to use during song analysis. Values: `musicnn` (default, 200-dim MusiCNN), `maest` (768-dim MAEST-based discogs classifier), `both` (run both models per track). | `musicnn` |
+| `MAEST_MODEL_PATH` | Path to the MAEST ONNX model file. | *(from bundle)* |
+| `MAEST_INPUT_NAME` | ONNX input tensor name for MAEST. | `input` |
+| `MAEST_JSON_PATH` | Path to the MAEST mood labels JSON. | *(from bundle)* |
+| `CLUSTERING_MODE` | Which feature space to cluster in. Values: `musicnn` (mood_vector), `maest` (maest_mood_vector), `hybrid_blend` (fixed PCA + weighted concat), `dual_consensus` (independent streams, co-association fusion). | `musicnn` |
+| `HYBRID_PCA_MUSICNN` | PCA components for MusiCNN stream in hybrid/blend modes. | `10` |
+| `HYBRID_PCA_MAEST` | PCA components for MAEST stream in hybrid/blend modes. | `10` |
+| `HYBRID_WEIGHT_MUSICNN` | Weight for MusiCNN stream in fusion (hybrid_blend, dual_consensus, IVF fusion). | `0.5` |
+| `HYBRID_WEIGHT_MAEST` | Weight for MAEST stream in fusion. | `0.5` |
+| `INDEX_NAME_MAEST` | Name for the MAEST embedding IVF index. | `ivf_maest` |
+| `FUSION_WEIGHT_MUSICNN_DEFAULT` | Default `mood_weight` for /api/similar_tracks fusion (1.0 = pure MusiCNN). | `1.0` |
+| `AUTO_CALIBRATE_LN_STATS` | Auto-calibrate log-normal diversity/purity Z-score stats at clustering start. | `true` |
+| `LN_MAEST_GENRE_DIVERSITY_STATS`, `LN_MAEST_GENRE_PURITY_STATS` | Log-normal stats (min, max, mean, sd) for MAEST clustering mode. | *(calibrated)* |
+| `LN_HYBRID_MOOD_DIVERSITY_STATS`, `LN_HYBRID_MOOD_PURITY_STATS` | Log-normal stats for hybrid/dual-consensus clustering modes. | *(calibrated)* |
+| `SEQUENTIAL_ANALYSIS` | Load one model at a time vs all upfront (low VRAM vs high VRAM). | `true` |
 
 These are the default parameters used when launching analysis or clustering tasks. You can change them directly in the front-end.
 

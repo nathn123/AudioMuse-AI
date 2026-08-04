@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """Structural import smoke test — no DB, no ONNX, no Flask context needed."""
-import sys, os, traceback
+import sys
+import os
+import traceback
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
