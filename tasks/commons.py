@@ -45,10 +45,10 @@ def fetch_track_metadata_map(item_ids):
     return metadata_map
 
 
-def score_vector(row, mood_labels_list, other_feature_labels_list):
+def score_vector(row, mood_labels_list, other_feature_labels_list, mood_column='mood_vector'):
     tempo = float(row['tempo']) if row['tempo'] is not None else 0.0
     energy = float(row['energy']) if row['energy'] is not None else 0.0
-    mood_str = row['mood_vector'] or ""
+    mood_str = row.get(mood_column, "") or ""
 
     tempo_range = TEMPO_MAX_BPM - TEMPO_MIN_BPM
     tempo_norm = (tempo - TEMPO_MIN_BPM) / tempo_range if tempo_range > 0 else 0.0

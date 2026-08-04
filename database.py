@@ -435,7 +435,7 @@ def get_score_data_by_ids(item_ids_list):
     conn = get_db()
     cur = conn.cursor(cursor_factory=DictCursor)
     query = """
-        SELECT s.item_id, s.title, s.author, s.album, s.album_artist, s.tempo, s.key, s.scale, s.mood_vector, s.energy, s.other_features, s.year, s.rating, s.file_path
+        SELECT s.item_id, s.title, s.author, s.album, s.album_artist, s.tempo, s.key, s.scale, s.mood_vector, s.maest_mood_vector, s.energy, s.other_features, s.year, s.rating, s.file_path
         FROM score s
         WHERE s.item_id IN %s
     """
