@@ -103,5 +103,21 @@ def sanitize_for_json(obj):
         return float(obj)
     elif isinstance(obj, np.bool_):
         return bool(obj)
+    # ─── ADD THIS SECTION ────────────────────────────────────────
+    elif hasattr(obj, '__class__') and 'sklearn' in getattr(obj, '__module__', ''):
+        # Handle sklearn transformers (StandardScaler, PCA, etc.)
+        result = {}
+        for attr in ['mean_', 'scale_', 'n_components_', 'components_', 
+                     'explained_variance_ratio_', 'n_features_in_']:
+            val = getattr(obj, attr, None)
+            if val is not None:
+                if isinstance(val, np.ndarray):
+                    result[attr] = val.tolist()
+                elif isinstance(val, (np.integer, np.floating)):
+                    result[attr] = float(val) if isinstance(val, np.floating) else int(val)
+                else:
+                    result[attr] = val
+        return result
+    # ─────────────────────────────────────────────────────────────
     else:
-        return obj
+        return obj  # ← Still risky if other non-serializable objects slip through
