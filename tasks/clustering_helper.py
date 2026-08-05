@@ -231,6 +231,7 @@ def _perform_single_clustering_iteration(
         # 2b. Handle hybrid blend PCA BEFORE parameter generation (uses fixed config values)
         # This is necessary because _generate_evolutionary_parameters needs data.shape attributes
         hybrid_pca_models = None
+        hybrid_pca_reduced = None  # (X_musicnn_pca, X_maest_pca) — stored for evolved-weight re-concat
         if use_hybrid_internal_pca and isinstance(data_to_cluster, tuple):
             X_musicnn_raw, X_maest_raw = data_to_cluster
 
@@ -242,10 +243,12 @@ def _perform_single_clustering_iteration(
                 logger.error(f"{log_prefix} Iteration {run_idx}: PCA reduction failed for hybrid blend.")
                 return {"fitness_score": -1.0}
 
-            # Weight-scale and concatenate
-            X_musicnn_weighted = X_musicnn_pca * HYBRID_WEIGHT_MUSICNN
-            X_maest_weighted = X_maest_pca * HYBRID_WEIGHT_MAEST
-            data_to_cluster = np.hstack([X_musicnn_weighted, X_maest_weighted])
+            # Store PCA-reduced streams so we can re-concatenate with evolved weights
+            hybrid_pca_reduced = (X_musicnn_pca, X_maest_pca)
+
+            # Temporarily concatenate with default weights so _generate_evolutionary_parameters
+            # can read data.shape (shape is weight-independent).
+            data_to_cluster = np.hstack([X_musicnn_pca, X_maest_pca])
 
             # Store PCA models for later inversion (HybridScaler in Task 2b.6)
             hybrid_pca_models = {
@@ -265,8 +268,19 @@ def _perform_single_clustering_iteration(
         # Attach hybrid PCA models to params and disable regular PCA for hybrid mode
         if hybrid_pca_models:
             params['_hybrid_pca_models'] = hybrid_pca_models
-            params['_hybrid_weights'] = {'musicnn': HYBRID_WEIGHT_MUSICNN, 'maest': HYBRID_WEIGHT_MAEST}
+            # Read evolved fusion weights from params (fall back to config constants)
+            weights = params.get('hybrid_weights', {'musicnn': HYBRID_WEIGHT_MUSICNN, 'maest': HYBRID_WEIGHT_MAEST})
+            w_mn = weights['musicnn']
+            w_ma = weights['maest']
+            params['_hybrid_weights'] = {'musicnn': w_mn, 'maest': w_ma}
             params['pca_config']['enabled'] = False
+
+            # Re-concatenate with the evolved weights (data_to_cluster currently holds
+            # the unweighted concat from the temporary step above).
+            X_musicnn_pca, X_maest_pca = hybrid_pca_reduced
+            X_musicnn_weighted = X_musicnn_pca * w_mn
+            X_maest_weighted = X_maest_pca * w_ma
+            data_to_cluster = np.hstack([X_musicnn_weighted, X_maest_weighted])
 
         # ─── Dual Consensus: run both streams independently, fuse ──────────────
         if clustering_mode == "dual_consensus" and isinstance(data_to_cluster, tuple):
@@ -308,18 +322,21 @@ def _perform_single_clustering_iteration(
                 logger.error(f"{log_prefix} Iteration {run_idx}: Dual consensus clustering failed on one or both streams.")
                 return {"fitness_score": -1.0}
 
+            # Read evolved fusion weights from params (fall back to config constants)
+            weights = params.get('hybrid_weights', {'musicnn': HYBRID_WEIGHT_MUSICNN, 'maest': HYBRID_WEIGHT_MAEST})
+            weight_mn = weights['musicnn']
+            weight_ma = weights['maest']
+
             # Fuse labels via co-association
             fused_labels = _fuse_coassociation(
                 labels_mn, labels_ma,
                 X_a=reduced_mn, X_b=reduced_ma,
-                weight_a=HYBRID_WEIGHT_MUSICNN, weight_b=HYBRID_WEIGHT_MAEST,
+                weight_a=weight_mn, weight_b=weight_ma,
                 nmi_threshold=nmi_threshold,
             )
 
             # Build fused feature space for scoring (weighted concat of each stream in original space)
             # Reuse the per-stream scalers/PCAs from above for the combined space
-            weight_mn = HYBRID_WEIGHT_MUSICNN
-            weight_ma = HYBRID_WEIGHT_MAEST
             m_pca_reduced = reduced_mn * weight_mn
             a_pca_reduced = reduced_ma * weight_ma
             data_for_metrics = np.hstack([m_pca_reduced, a_pca_reduced])
@@ -441,7 +458,8 @@ class HybridScaler:
     4. Inverse scale for each
     5. Return only the musicnn portion (used for naming with mood labels)
     """
-    def __init__(self, m_scaler, m_pca, a_scaler, a_pca, n_musicnn_dims):
+    def __init__(self, m_scaler, m_pca, a_scaler, a_pca, n_musicnn_dims,
+                 weight_musicnn=HYBRID_WEIGHT_MUSICNN, weight_maest=HYBRID_WEIGHT_MAEST):
         """Initialize with the PCA models and scalers from hybrid blending.
 
         Args:
@@ -450,12 +468,18 @@ class HybridScaler:
             a_scaler: StandardScaler for maest features
             a_pca: PCA model for maest features (can be None if no PCA applied)
             n_musicnn_dims: Original dimensionality of musicnn feature space
+            weight_musicnn: Evolved fusion weight for the musicnn stream (defaults
+                to the config constant for backward compatibility)
+            weight_maest: Evolved fusion weight for the maest stream (defaults
+                to the config constant for backward compatibility)
         """
         self.m_scaler = m_scaler
         self.m_pca = m_pca
         self.a_scaler = a_scaler
         self.a_pca = a_pca
         self.n_musicnn_dims = n_musicnn_dims
+        self.weight_musicnn = weight_musicnn
+        self.weight_maest = weight_maest
 
     def inverse_transform(self, hybrid_vec, musicnn_output_dims=None, maest_output_dims=None):
         """Invert a hybrid-space vector back to original musicnn feature space.
@@ -478,8 +502,10 @@ class HybridScaler:
         # Split hybrid vector into musicnn portion for inversion (maest portion not needed for naming)
         musicnn_portion = hybrid_vec[:n_musicnn_pca]
 
-        # Un-weight (reverse the weight scaling from lines 224-225)
-        musicnn_unweighted = musicnn_portion / HYBRID_WEIGHT_MUSICNN if HYBRID_WEIGHT_MUSICNN > 0 else musicnn_portion
+        # Un-weight (reverse the weight scaling applied during hybrid blending).
+        # Uses the evolved weight passed at construction (falls back to the config
+        # constant for backward compatibility).
+        musicnn_unweighted = musicnn_portion / self.weight_musicnn if self.weight_musicnn > 0 else musicnn_portion
 
         # Inverse PCA for musicnn (to get back to scaled space)
         if self.m_pca is not None:
@@ -611,8 +637,15 @@ def _generate_random_parameters(method, data, pca_ranges, num_clust_ranges, db_r
         n_clust = random.randint(lower_k, upper_k) if upper_k >= lower_k else lower_k
         method_params = {"n_clusters": n_clust, "random_state": random.randint(0, 10000)}
 
-    return {"pca_config": pca_config, "clustering_method_config": {"method": method, "params": method_params},
-            "clustering_mode": clustering_mode}
+    result = {"pca_config": pca_config, "clustering_method_config": {"method": method, "params": method_params},
+              "clustering_mode": clustering_mode}
+    # Evolvable fusion weights for hybrid_blend mode (sum to 1.0, in [0.1, 0.9]).
+    # dual_consensus is handled by _generate_random_dual_params via the early return above.
+    if clustering_mode == 'hybrid_blend':
+        w_mn = random.uniform(0.1, 0.9)
+        w_ma = 1.0 - w_mn
+        result['hybrid_weights'] = {'musicnn': w_mn, 'maest': w_ma}
+    return result
 
 
 def _generate_random_dual_params(method, data_tuple, pca_ranges, num_clust_ranges, db_ranges, gmm_ranges, spec_ranges):
@@ -668,12 +701,16 @@ def _generate_random_dual_params(method, data_tuple, pca_ranges, num_clust_range
         n_clust = random.randint(lower_k, upper_k) if upper_k >= lower_k else lower_k
         method_params = {"n_clusters": n_clust, "random_state": random.randint(0, 10000)}
 
+    # Evolvable fusion weights for dual_consensus mode (sum to 1.0, in [0.1, 0.9]).
+    w_mn = random.uniform(0.1, 0.9)
+    w_ma = 1.0 - w_mn
     return {
         "musicnn_pca": musicnn_pca,
         "maest_pca": maest_pca,
         "pca_config": {"enabled": False, "components": 0},  # Disabled — per-stream PCAs are embedded
         "clustering_method_config": {"method": method, "params": method_params},
         "clustering_mode": "dual_consensus",
+        "hybrid_weights": {'musicnn': w_mn, 'maest': w_ma},
     }
 
 def _mutate_parameters(elite_params, mutation_cfg, method, data, pca_ranges, num_clust_ranges, db_ranges, gmm_ranges, spec_ranges, *args, clustering_mode='musicnn'):
@@ -725,8 +762,27 @@ def _mutate_parameters(elite_params, mutation_cfg, method, data, pca_ranges, num
         mutated_random_state = _mutate_param(elite_random_state, 0, 10000, mutation_cfg.get("int_abs_delta", 100))
         method_params = {"n_clusters": n_clust, "random_state": mutated_random_state}
 
-    return {"pca_config": pca_config, "clustering_method_config": {"method": method, "params": method_params},
-            "clustering_mode": clustering_mode}
+    result = {"pca_config": pca_config, "clustering_method_config": {"method": method, "params": method_params},
+              "clustering_mode": clustering_mode}
+    # Mutate evolvable fusion weights when present (hybrid_blend mode).
+    # Uses _mutate_param with the float delta, then renormalizes to sum to 1.0
+    # and clamps each weight to [0.05, 0.95] to keep them meaningful.
+    if 'hybrid_weights' in elite_params:
+        elite_w = elite_params['hybrid_weights']
+        elite_mn = float(elite_w.get('musicnn', HYBRID_WEIGHT_MUSICNN))
+        elite_ma = float(elite_w.get('maest', HYBRID_WEIGHT_MAEST))
+        float_delta = mutation_cfg.get('float_abs_delta', 0.1)
+        new_mn = _mutate_param(elite_mn, 0.05, 0.95, float_delta, is_float=True)
+        new_ma = _mutate_param(elite_ma, 0.05, 0.95, float_delta, is_float=True)
+        total = new_mn + new_ma
+        if total > 0:
+            new_mn = new_mn / total
+            new_ma = new_ma / total
+        # Re-clamp after renormalization and adjust to keep sum == 1.0
+        new_mn = min(0.95, max(0.05, new_mn))
+        new_ma = 1.0 - new_mn
+        result['hybrid_weights'] = {'musicnn': new_mn, 'maest': new_ma}
+    return result
 
 
 def _mutate_dual_parameters(elite_params, mutation_cfg, method, data_tuple, pca_ranges, num_clust_ranges, db_ranges, gmm_ranges, spec_ranges):
@@ -779,13 +835,32 @@ def _mutate_dual_parameters(elite_params, mutation_cfg, method, data_tuple, pca_
         mutated_random_state = _mutate_param(elite_random_state, 0, 10000, mutation_cfg.get("int_abs_delta", 100))
         method_params = {"n_clusters": n_clust, "random_state": mutated_random_state}
 
-    return {
+    result = {
         "musicnn_pca": musicnn_pca,
         "maest_pca": maest_pca,
         "pca_config": {"enabled": False, "components": 0},
         "clustering_method_config": {"method": method, "params": method_params},
         "clustering_mode": "dual_consensus",
     }
+    # Mutate evolvable fusion weights when present (dual_consensus mode).
+    # Uses _mutate_param with the float delta, then renormalizes to sum to 1.0
+    # and clamps each weight to [0.05, 0.95] to keep them meaningful.
+    if 'hybrid_weights' in elite_params:
+        elite_w = elite_params['hybrid_weights']
+        elite_mn = float(elite_w.get('musicnn', HYBRID_WEIGHT_MUSICNN))
+        elite_ma = float(elite_w.get('maest', HYBRID_WEIGHT_MAEST))
+        float_delta = mutation_cfg.get('float_abs_delta', 0.1)
+        new_mn = _mutate_param(elite_mn, 0.05, 0.95, float_delta, is_float=True)
+        new_ma = _mutate_param(elite_ma, 0.05, 0.95, float_delta, is_float=True)
+        total = new_mn + new_ma
+        if total > 0:
+            new_mn = new_mn / total
+            new_ma = new_ma / total
+        # Re-clamp after renormalization and adjust to keep sum == 1.0
+        new_mn = min(0.95, max(0.05, new_mn))
+        new_ma = 1.0 - new_mn
+        result['hybrid_weights'] = {'musicnn': new_mn, 'maest': new_ma}
+    return result
 
 # --- Step 3 & 4: Apply Models ---
 
@@ -1114,9 +1189,15 @@ def _format_and_score_iteration_result(
                 n_musicnn_dims = 2 + len(MOOD_LABELS) + len(OTHER_FEATURE_LABELS)
 
                 # Create HybridScaler and invert
+                # Pass the evolved fusion weights so the un-weighting step in
+                # inverse_transform matches the weighting applied during blending.
+                hybrid_weights = params.get('_hybrid_weights', {})
+                w_mn_h = hybrid_weights.get('musicnn', HYBRID_WEIGHT_MUSICNN)
+                w_ma_h = hybrid_weights.get('maest', HYBRID_WEIGHT_MAEST)
                 musicnn_out_dims = m_model.get('output_dims')
                 maest_out_dims = a_model.get('output_dims')
-                hybrid_scaler = HybridScaler(m_scaler_h, m_pca_h, a_scaler_h, a_pca_h, n_musicnn_dims)
+                hybrid_scaler = HybridScaler(m_scaler_h, m_pca_h, a_scaler_h, a_pca_h, n_musicnn_dims,
+                                             weight_musicnn=w_mn_h, weight_maest=w_ma_h)
                 inverted_vec = hybrid_scaler.inverse_transform(center_vec, musicnn_out_dims, maest_out_dims)
                 if inverted_vec is None:
                     logger.warning(f"{log_prefix} Iteration {run_idx}: Failed to invert hybrid centroid for cluster {label_id}. Skipping.")
