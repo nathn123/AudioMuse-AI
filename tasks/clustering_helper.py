@@ -228,33 +228,11 @@ def _perform_single_clustering_iteration(
             logger.error(f"{log_prefix} Iteration {run_idx}: Data for clustering is empty after prep. Cannot proceed.")
             return {"fitness_score": -1.0}
 
-        # 2b. Handle hybrid blend PCA BEFORE parameter generation (uses fixed config values)
-        # This is necessary because _generate_evolutionary_parameters needs data.shape attributes
+        # 2b. Hybrid blend PCA is now handled AFTER parameter generation (step 3)
+        # so that per-stream PCA component counts can be evolved. Keep data_to_cluster
+        # as a tuple so _generate_evolutionary_parameters routes to the dual param generators.
         hybrid_pca_models = None
         hybrid_pca_reduced = None  # (X_musicnn_pca, X_maest_pca) — stored for evolved-weight re-concat
-        if use_hybrid_internal_pca and isinstance(data_to_cluster, tuple):
-            X_musicnn_raw, X_maest_raw = data_to_cluster
-
-            # Use fixed HYBRID_PCA_* values (evolutionary PCA is skipped for hybrid mode)
-            m_scaler, m_pca, X_musicnn_pca = _pca_reduce(X_musicnn_raw, hybrid_pca_musicnn, log_prefix, "MusicNN")
-            a_scaler, a_pca, X_maest_pca = _pca_reduce(X_maest_raw, hybrid_pca_maest, log_prefix, "MAEST")
-
-            if X_musicnn_pca is None or X_maest_pca is None:
-                logger.error(f"{log_prefix} Iteration {run_idx}: PCA reduction failed for hybrid blend.")
-                return {"fitness_score": -1.0}
-
-            # Store PCA-reduced streams so we can re-concatenate with evolved weights
-            hybrid_pca_reduced = (X_musicnn_pca, X_maest_pca)
-
-            # Temporarily concatenate with default weights so _generate_evolutionary_parameters
-            # can read data.shape (shape is weight-independent).
-            data_to_cluster = np.hstack([X_musicnn_pca, X_maest_pca])
-
-            # Store PCA models for later inversion (HybridScaler in Task 2b.6)
-            hybrid_pca_models = {
-                'musicnn': {'scaler': m_scaler, 'pca': m_pca, 'output_dims': X_musicnn_pca.shape[1]},
-                'maest': {'scaler': a_scaler, 'pca': a_pca, 'output_dims': X_maest_pca.shape[1]}
-            }
 
         # 3. Generate Parameters BEFORE the dual_consensus early-return block,
         #    because that block needs params (PCA configs, clustering method) to run.
@@ -264,6 +242,35 @@ def _perform_single_clustering_iteration(
             num_clusters_min_max, dbscan_params_ranges, gmm_params_ranges, spectral_params_ranges,
             log_prefix, run_idx, clustering_mode=clustering_mode
         )
+
+        # 3b. Hybrid blend: apply per-stream PCA using evolved component counts from params.
+        # The dual param generators now produce 'musicnn_pca' and 'maest_pca' configs.
+        if use_hybrid_internal_pca and isinstance(data_to_cluster, tuple):
+            X_musicnn_raw, X_maest_raw = data_to_cluster
+
+            # Read evolved per-stream PCA configs (fall back to config constants)
+            mn_pca_cfg = params.get('musicnn_pca', {'enabled': True, 'components': hybrid_pca_musicnn})
+            ma_pca_cfg = params.get('maest_pca', {'enabled': True, 'components': hybrid_pca_maest})
+
+            m_scaler, m_pca, X_musicnn_pca = _pca_reduce(X_musicnn_raw, mn_pca_cfg['components'], log_prefix, "MusicNN")
+            a_scaler, a_pca, X_maest_pca = _pca_reduce(X_maest_raw, ma_pca_cfg['components'], log_prefix, "MAEST")
+
+            if X_musicnn_pca is None or X_maest_pca is None:
+                logger.error(f"{log_prefix} Iteration {run_idx}: PCA reduction failed for hybrid blend.")
+                return {"fitness_score": -1.0}
+
+            # Store PCA-reduced streams so we can re-concatenate with evolved weights
+            hybrid_pca_reduced = (X_musicnn_pca, X_maest_pca)
+
+            # Temporarily concatenate with default weights so the clustering path below
+            # can operate on the combined space (shape is weight-independent).
+            data_to_cluster = np.hstack([X_musicnn_pca, X_maest_pca])
+
+            # Store PCA models for later inversion (HybridScaler in _format_and_score_iteration_result)
+            hybrid_pca_models = {
+                'musicnn': {'scaler': m_scaler, 'pca': m_pca, 'output_dims': X_musicnn_pca.shape[1]},
+                'maest': {'scaler': a_scaler, 'pca': a_pca, 'output_dims': X_maest_pca.shape[1]}
+            }
 
         # Attach hybrid PCA models to params and disable regular PCA for hybrid mode
         if hybrid_pca_models:
@@ -350,6 +357,16 @@ def _perform_single_clustering_iteration(
                 if mask.sum() > 0:
                     fused_centers[cid] = data_for_metrics[mask].mean(axis=0)
 
+            # Recalculate centroids in BOTH spaces for naming
+            musicnn_centroid_for_naming = {}
+            maest_centroid_for_naming = {}
+            for cid in set(fused_labels):
+                if cid == -1:
+                    continue
+                mask = fused_labels == cid
+                musicnn_centroid_for_naming[cid] = reduced_mn[mask].mean(axis=0)
+                maest_centroid_for_naming[cid] = reduced_ma[mask].mean(axis=0)
+
             # Build HybridScaler metadata dict for centroid inversion during naming
             params['_hybrid_pca_models'] = {
                 'musicnn': {'scaler': scaler_mn, 'pca': pca_mn, 'output_dims': reduced_mn.shape[1]},
@@ -363,6 +380,8 @@ def _perform_single_clustering_iteration(
                 fused_centers, None, None, None, active_mood_labels,
                 params, max_songs_per_cluster, run_idx, enable_clustering_embeddings, score_weights, log_prefix,
                 clustering_mode=clustering_mode,
+                musicnn_centroids_for_naming=musicnn_centroid_for_naming,
+                maest_centroids_for_naming=maest_centroid_for_naming,
             )
 
         # 4. Apply PCA if specified by the generated parameters (skipped for hybrid_blend)
@@ -444,7 +463,7 @@ def _prepare_iteration_data_both(item_ids, musicnn_labels, maest_labels, log_pre
     return valid_tracks, X_mn, X_ma
 
 class HybridScaler:
-    """Handles inversion of hybrid-space vectors back to original musicnn feature space.
+    """Handles inversion of hybrid-space vectors back to BOTH original feature spaces.
 
     The hybrid blend process is:
     1. Scale musicnn features -> PCA-reduce -> weight-scale
@@ -456,10 +475,11 @@ class HybridScaler:
     2. Un-weight each portion (divide by weights)
     3. Inverse PCA for each
     4. Inverse scale for each
-    5. Return only the musicnn portion (used for naming with mood labels)
+    5. Return BOTH inverted vectors (musicnn and maest) for composite naming
     """
     def __init__(self, m_scaler, m_pca, a_scaler, a_pca, n_musicnn_dims,
-                 weight_musicnn=HYBRID_WEIGHT_MUSICNN, weight_maest=HYBRID_WEIGHT_MAEST):
+                 weight_musicnn=HYBRID_WEIGHT_MUSICNN, weight_maest=HYBRID_WEIGHT_MAEST,
+                 n_maest_dims=None):
         """Initialize with the PCA models and scalers from hybrid blending.
 
         Args:
@@ -472,17 +492,57 @@ class HybridScaler:
                 to the config constant for backward compatibility)
             weight_maest: Evolved fusion weight for the maest stream (defaults
                 to the config constant for backward compatibility)
+            n_maest_dims: Original dimensionality of maest feature space
+                (defaults to 2 + len(MAEST_MOOD_LABELS) + len(OTHER_FEATURE_LABELS))
         """
         self.m_scaler = m_scaler
         self.m_pca = m_pca
         self.a_scaler = a_scaler
         self.a_pca = a_pca
         self.n_musicnn_dims = n_musicnn_dims
+        self.n_maest_dims = n_maest_dims if n_maest_dims is not None else 2 + len(MAEST_MOOD_LABELS) + len(OTHER_FEATURE_LABELS)
         self.weight_musicnn = weight_musicnn
         self.weight_maest = weight_maest
 
+    @staticmethod
+    def _invert_single_stream(vec, scaler, pca, original_dims):
+        """Invert a single stream's reduced vector back to original feature space.
+
+        Args:
+            vec: 1D numpy array in reduced (scaled/PCA) space for this stream
+            scaler: StandardScaler for this stream (can be None)
+            pca: PCA model for this stream (can be None)
+            original_dims: Original dimensionality of this stream's feature space
+
+        Returns:
+            1D numpy array in original feature space
+        """
+        if vec is None or len(vec) == 0:
+            return None
+
+        vec = np.array(vec).flatten()
+        unweighted = vec
+
+        # Inverse PCA (to get back to scaled space)
+        if pca is not None:
+            scaled = pca.inverse_transform(unweighted.reshape(1, -1)).flatten()
+        else:
+            scaled = unweighted
+
+        # Inverse scale (to get back to original space)
+        if scaler is not None:
+            original = scaler.inverse_transform(scaled.reshape(1, -1)).flatten()
+        else:
+            original = scaled
+
+        # Truncate to original dimensions if needed
+        if len(original) > original_dims:
+            original = original[:original_dims]
+
+        return original
+
     def inverse_transform(self, hybrid_vec, musicnn_output_dims=None, maest_output_dims=None):
-        """Invert a hybrid-space vector back to original musicnn feature space.
+        """Invert a hybrid-space vector back to BOTH original feature spaces.
 
         Args:
             hybrid_vec: 1D numpy array in hybrid blended space
@@ -490,40 +550,37 @@ class HybridScaler:
             maest_output_dims: PCA output dims for maest (from stored config)
 
         Returns:
-            1D numpy array in original musicnn feature space (for naming)
+            Tuple (musicnn_original, maest_original) — 1D numpy arrays in the
+            original musicnn and maest feature spaces respectively.
+            Returns (None, None) if hybrid_vec is empty.
         """
         if hybrid_vec is None or len(hybrid_vec) == 0:
-            return None
+            return None, None
 
         hybrid_vec = np.array(hybrid_vec).flatten()
         # Use provided dims or fall back to model attributes
         n_musicnn_pca = musicnn_output_dims if musicnn_output_dims is not None else (self.m_pca.n_components_ if self.m_pca else self.n_musicnn_dims)
+        n_maest_pca = maest_output_dims if maest_output_dims is not None else (self.a_pca.n_components_ if self.a_pca else self.n_maest_dims)
 
-        # Split hybrid vector into musicnn portion for inversion (maest portion not needed for naming)
+        # Split hybrid vector into both portions
         musicnn_portion = hybrid_vec[:n_musicnn_pca]
+        maest_portion = hybrid_vec[n_musicnn_pca:n_musicnn_pca + n_maest_pca]
 
-        # Un-weight (reverse the weight scaling applied during hybrid blending).
-        # Uses the evolved weight passed at construction (falls back to the config
-        # constant for backward compatibility).
+        # Un-weight each portion (reverse the weight scaling applied during hybrid blending).
         musicnn_unweighted = musicnn_portion / self.weight_musicnn if self.weight_musicnn > 0 else musicnn_portion
+        maest_unweighted = maest_portion / self.weight_maest if self.weight_maest > 0 else maest_portion
 
-        # Inverse PCA for musicnn (to get back to scaled space)
-        if self.m_pca is not None:
-            musicnn_scaled = self.m_pca.inverse_transform(musicnn_unweighted.reshape(1, -1)).flatten()
-        else:
-            musicnn_scaled = musicnn_unweighted
+        # Inverse PCA and inverse scale for musicnn
+        musicnn_original = self._invert_single_stream(
+            musicnn_unweighted, self.m_scaler, self.m_pca, self.n_musicnn_dims
+        )
 
-        # Inverse scale for musicnn (to get back to original space)
-        if self.m_scaler is not None:
-            musicnn_original = self.m_scaler.inverse_transform(musicnn_scaled.reshape(1, -1)).flatten()
-        else:
-            musicnn_original = musicnn_scaled
+        # Inverse PCA and inverse scale for maest
+        maest_original = self._invert_single_stream(
+            maest_unweighted, self.a_scaler, self.a_pca, self.n_maest_dims
+        )
 
-        # Truncate to original musicnn dimensions if needed
-        if len(musicnn_original) > self.n_musicnn_dims:
-            musicnn_original = musicnn_original[:self.n_musicnn_dims]
-
-        return musicnn_original
+        return musicnn_original, maest_original
 
 
 def _pca_reduce(data, n_components, log_prefix, stream_name=""):
@@ -577,10 +634,10 @@ def _generate_evolutionary_parameters(elites, exploitation_prob, mutation_cfg, m
     tagged with the same mode and generates per-stream PCA params.
     """
     # Filter elites by mode to prevent cross-contamination
-    if clustering_mode == 'dual_consensus':
-        mode_elites = [e for e in elites if e.get('clustering_mode') == 'dual_consensus']
+    if clustering_mode in ('dual_consensus', 'hybrid_blend'):
+        mode_elites = [e for e in elites if e.get('clustering_mode') == clustering_mode]
     else:
-        mode_elites = [e for e in elites if e.get('clustering_mode', 'musicnn') in ('musicnn', 'hybrid_blend', None)]
+        mode_elites = [e for e in elites if e.get('clustering_mode', 'musicnn') in ('musicnn', None)]
 
     if mode_elites and random.random() < exploitation_prob:
         chosen_elite = random.choice(mode_elites)
@@ -593,9 +650,10 @@ def _generate_random_parameters(method, data, pca_ranges, num_clust_ranges, db_r
     For dual_consensus mode, generates per-stream PCA configs via
     _generate_random_dual_params.
     """
-    if clustering_mode == 'dual_consensus' and isinstance(data, tuple):
+    if clustering_mode in ('dual_consensus', 'hybrid_blend') and isinstance(data, tuple):
         return _generate_random_dual_params(method, data, pca_ranges, num_clust_ranges,
-                                            db_ranges, gmm_ranges, spec_ranges)
+                                            db_ranges, gmm_ranges, spec_ranges,
+                                            clustering_mode=clustering_mode)
 
     max_pca = min(pca_ranges['components_max'], data.shape[1], data.shape[0] - 1)
     min_pca = pca_ranges['components_min']
@@ -648,8 +706,8 @@ def _generate_random_parameters(method, data, pca_ranges, num_clust_ranges, db_r
     return result
 
 
-def _generate_random_dual_params(method, data_tuple, pca_ranges, num_clust_ranges, db_ranges, gmm_ranges, spec_ranges):
-    """Generates random per-stream PCA parameters for dual consensus.
+def _generate_random_dual_params(method, data_tuple, pca_ranges, num_clust_ranges, db_ranges, gmm_ranges, spec_ranges, clustering_mode='dual_consensus'):
+    """Generates random per-stream PCA parameters for dual consensus / hybrid blend.
 
     Each stream gets its own PCA components clamped to its dimension,
     enabling independent exploration of the musicnn (58-dim) and MAEST
@@ -709,7 +767,7 @@ def _generate_random_dual_params(method, data_tuple, pca_ranges, num_clust_range
         "maest_pca": maest_pca,
         "pca_config": {"enabled": False, "components": 0},  # Disabled — per-stream PCAs are embedded
         "clustering_method_config": {"method": method, "params": method_params},
-        "clustering_mode": "dual_consensus",
+        "clustering_mode": clustering_mode,
         "hybrid_weights": {'musicnn': w_mn, 'maest': w_ma},
     }
 
@@ -721,9 +779,10 @@ def _mutate_parameters(elite_params, mutation_cfg, method, data, pca_ranges, num
     """
     clustering_mode = elite_params.get('clustering_mode', 'musicnn')
 
-    if clustering_mode == 'dual_consensus':
+    if clustering_mode in ('dual_consensus', 'hybrid_blend'):
         return _mutate_dual_parameters(elite_params, mutation_cfg, method, data,
-                                       pca_ranges, num_clust_ranges, db_ranges, gmm_ranges, spec_ranges)
+                                       pca_ranges, num_clust_ranges, db_ranges, gmm_ranges, spec_ranges,
+                                       clustering_mode=clustering_mode)
 
     elite_pca_cfg = elite_params['pca_config']
     elite_method_cfg = elite_params['clustering_method_config']
@@ -785,8 +844,8 @@ def _mutate_parameters(elite_params, mutation_cfg, method, data, pca_ranges, num
     return result
 
 
-def _mutate_dual_parameters(elite_params, mutation_cfg, method, data_tuple, pca_ranges, num_clust_ranges, db_ranges, gmm_ranges, spec_ranges):
-    """Mutates a dual_consensus elite's per-stream PCA configs independently."""
+def _mutate_dual_parameters(elite_params, mutation_cfg, method, data_tuple, pca_ranges, num_clust_ranges, db_ranges, gmm_ranges, spec_ranges, clustering_mode='dual_consensus'):
+    """Mutates a dual_consensus / hybrid_blend elite's per-stream PCA configs independently."""
     X_mn, X_ma = data_tuple
     elite_method_cfg = elite_params['clustering_method_config']
     delta = mutation_cfg.get('int_abs_delta', 2)
@@ -840,7 +899,7 @@ def _mutate_dual_parameters(elite_params, mutation_cfg, method, data_tuple, pca_
         "maest_pca": maest_pca,
         "pca_config": {"enabled": False, "components": 0},
         "clustering_method_config": {"method": method, "params": method_params},
-        "clustering_mode": "dual_consensus",
+        "clustering_mode": clustering_mode,
     }
     # Mutate evolvable fusion weights when present (dual_consensus mode).
     # Uses _mutate_param with the float delta, then renormalizes to sum to 1.0
@@ -1097,7 +1156,8 @@ def _calibrate_ln_stats(num_samples=2000, num_fast_iterations=20, clustering_mod
 def _format_and_score_iteration_result(
     labels, valid_tracks, X_feat_orig, data_for_metrics,
     centers, model, pca, scaler, active_moods,
-    params, max_songs_per_cluster, run_idx, use_embeddings, score_weights, log_prefix, clustering_mode='musicnn'):
+    params, max_songs_per_cluster, run_idx, use_embeddings, score_weights, log_prefix, clustering_mode='musicnn',
+    musicnn_centroids_for_naming=None, maest_centroids_for_naming=None):
     """
     Packages all results from the iteration into a dictionary and calculates the final fitness score.
     This version includes the advanced filtering and scoring logic.
@@ -1175,8 +1235,40 @@ def _format_and_score_iteration_result(
                 feature_centroid_vec = _get_feature_centroid_for_embedding_cluster(label_id, labels, X_feat_orig)
                 if feature_centroid_vec is None: continue
                 name, centroid_details = _name_cluster(feature_centroid_vec, None, False, active_moods, None)
+            elif clustering_mode == "dual_consensus" and musicnn_centroids_for_naming is not None and maest_centroids_for_naming is not None:
+                # Dual consensus: name using BOTH per-stream centroids inverted to their
+                # original spaces. The fused cluster's tracks have per-stream centroids
+                # computed in _perform_single_clustering_iteration.
+                mn_centroid = musicnn_centroids_for_naming.get(label_id)
+                ma_centroid = maest_centroids_for_naming.get(label_id)
+                if mn_centroid is None or ma_centroid is None:
+                    logger.warning(f"{log_prefix} Iteration {run_idx}: Missing dual centroid for cluster {label_id}. Skipping.")
+                    continue
+
+                # Invert each stream's centroid back to its original feature space
+                m_model = hybrid_pca_models.get('musicnn', {})
+                a_model = hybrid_pca_models.get('maest', {})
+                n_musicnn_dims = 2 + len(MOOD_LABELS) + len(OTHER_FEATURE_LABELS)
+                n_maest_dims = 2 + len(MAEST_MOOD_LABELS) + len(OTHER_FEATURE_LABELS)
+                inverted_musicnn = HybridScaler._invert_single_stream(
+                    mn_centroid, m_model.get('scaler'), m_model.get('pca'), n_musicnn_dims
+                )
+                inverted_maest = HybridScaler._invert_single_stream(
+                    ma_centroid, a_model.get('scaler'), a_model.get('pca'), n_maest_dims
+                )
+                if inverted_musicnn is None or inverted_maest is None:
+                    logger.warning(f"{log_prefix} Iteration {run_idx}: Failed to invert dual centroids for cluster {label_id}. Skipping.")
+                    continue
+
+                logger.debug(f"Hybrid inversion for cluster {label_id}: "
+                             f"musicnn_shape={inverted_musicnn.shape}, "
+                             f"maest_shape={inverted_maest.shape}")
+
+                name, centroid_details = _name_cluster_dual(
+                    inverted_musicnn, inverted_maest, MOOD_LABELS, MAEST_MOOD_LABELS
+                )
             elif is_hybrid_mode:
-                # Hybrid mode: invert hybrid-space centroid back to musicnn feature space for naming
+                # Hybrid mode: invert hybrid-space centroid back to BOTH original feature spaces for naming
                 # Extract hybrid PCA models
                 m_model = hybrid_pca_models.get('musicnn', {})
                 a_model = hybrid_pca_models.get('maest', {})
@@ -1185,10 +1277,11 @@ def _format_and_score_iteration_result(
                 a_scaler_h = a_model.get('scaler')
                 a_pca_h = a_model.get('pca')
 
-                # Get original musicnn dimensionality (58: 2 + 55 mood labels + other features)
+                # Get original musicnn and maest dimensionalities
                 n_musicnn_dims = 2 + len(MOOD_LABELS) + len(OTHER_FEATURE_LABELS)
+                n_maest_dims = 2 + len(MAEST_MOOD_LABELS) + len(OTHER_FEATURE_LABELS)
 
-                # Create HybridScaler and invert
+                # Create HybridScaler and invert BOTH portions
                 # Pass the evolved fusion weights so the un-weighting step in
                 # inverse_transform matches the weighting applied during blending.
                 hybrid_weights = params.get('_hybrid_weights', {})
@@ -1197,14 +1290,23 @@ def _format_and_score_iteration_result(
                 musicnn_out_dims = m_model.get('output_dims')
                 maest_out_dims = a_model.get('output_dims')
                 hybrid_scaler = HybridScaler(m_scaler_h, m_pca_h, a_scaler_h, a_pca_h, n_musicnn_dims,
-                                             weight_musicnn=w_mn_h, weight_maest=w_ma_h)
-                inverted_vec = hybrid_scaler.inverse_transform(center_vec, musicnn_out_dims, maest_out_dims)
-                if inverted_vec is None:
+                                             weight_musicnn=w_mn_h, weight_maest=w_ma_h,
+                                             n_maest_dims=n_maest_dims)
+                inverted_musicnn, inverted_maest = hybrid_scaler.inverse_transform(
+                    center_vec, musicnn_out_dims, maest_out_dims
+                )
+                if inverted_musicnn is None or inverted_maest is None:
                     logger.warning(f"{log_prefix} Iteration {run_idx}: Failed to invert hybrid centroid for cluster {label_id}. Skipping.")
                     continue
 
-                # Name using the inverted vector (no additional scaler/pca needed)
-                name, centroid_details = _name_cluster(inverted_vec, None, False, active_moods, None)
+                logger.debug(f"Hybrid inversion for cluster {label_id}: "
+                             f"musicnn_shape={inverted_musicnn.shape}, "
+                             f"maest_shape={inverted_maest.shape}")
+
+                # Name using BOTH inverted vectors (composite name from both spaces)
+                name, centroid_details = _name_cluster_dual(
+                    inverted_musicnn, inverted_maest, MOOD_LABELS, MAEST_MOOD_LABELS
+                )
             else:
                 name, centroid_details = _name_cluster(center_vec, pca, params['pca_config']['enabled'], active_moods, scaler)
 
@@ -1423,6 +1525,88 @@ def _name_cluster(centroid_vector, pca_model, pca_enabled, mood_labels, scaler):
     final_name = f"{base_name}{appended_other_features_str}"
 
     return final_name, details
+
+
+def _name_cluster_dual(musicnn_vector, maest_vector, musicnn_mood_labels,
+                       maest_mood_labels=None):
+    """Generates a composite name from BOTH musicnn and maest centroids.
+
+    Called for hybrid_blend / dual_consensus modes where two embedding spaces
+    are available. Generates a partial name from each space using
+    _name_cluster, then combines them:
+
+    - Both sides have 2+ strong moods -> f"{musicnn_name}+{maest_name}"
+    - Only one side has strong moods -> use the stronger one
+    - Neither side strong -> use the one with higher mood sum
+
+    Also merges centroid details from both sides into a single dict, with
+    MAEST mood keys prefixed "maest_" (e.g., "maest_Happy" vs "Happy")
+    to avoid collisions with musicnn mood labels.
+
+    Args:
+        musicnn_vector: 1D numpy array in original musicnn feature space
+            (already inverted, no scaler/PCA needed)
+        maest_vector: 1D numpy array in original maest feature space
+            (already inverted, no scaler/PCA needed)
+        musicnn_mood_labels: Mood label list for the musicnn side
+        maest_mood_labels: Mood label list for the maest side
+            (defaults to MAEST_MOOD_LABELS)
+
+    Returns:
+        (name, details) where details merges both spaces.
+    """
+    if maest_mood_labels is None:
+        maest_mood_labels = MAEST_MOOD_LABELS
+
+    # Generate partial names from both spaces (vectors are already in
+    # original feature space, so no scaler/PCA inversion needed).
+    musicnn_name, musicnn_details = _name_cluster(
+        musicnn_vector, None, False, musicnn_mood_labels, None
+    )
+    maest_name, maest_details = _name_cluster(
+        maest_vector, None, False, maest_mood_labels, None
+    )
+
+    # Count strong mood components and compute sums for the combination logic.
+    def _mood_strength(details_part, labels):
+        """Return (count_of_strong_moods, sum_of_mood_scores) for a side."""
+        mood_scores = [float(details_part.get(lbl, 0.0)) for lbl in labels]
+        strong = [s for s in mood_scores if s > 0.01]
+        return len(strong), sum(mood_scores)
+
+    mn_strong, mn_sum = _mood_strength(musicnn_details, musicnn_mood_labels)
+    ma_strong, ma_sum = _mood_strength(maest_details, maest_mood_labels)
+
+    # Combination logic:
+    # - Both have 2+ strong mood components -> composite name
+    # - Only one side has strong signals -> use the stronger one
+    # - Neither has strong signals but both have some signal -> composite
+    # - Otherwise use whichever has the higher mood sum
+    if mn_strong >= 2 and ma_strong >= 2:
+        final_name = f"{musicnn_name}+{maest_name}"
+    elif mn_strong >= 2:
+        final_name = musicnn_name
+    elif ma_strong >= 2:
+        final_name = maest_name
+    elif mn_sum >= 0.1 and ma_sum >= 0.1:
+        final_name = f"{musicnn_name}+{maest_name}"
+    elif mn_sum >= ma_sum:
+        final_name = musicnn_name
+    else:
+        final_name = maest_name
+
+    # Merge details dicts — prefix MAEST mood labels with "maest_" to avoid
+    # collisions (e.g., "maest_Happy" vs "Happy"). Other features are shared
+    # labels, so keep them unprefixed.
+    merged_details = dict(musicnn_details)
+    for key, val in maest_details.items():
+        if key in maest_mood_labels:
+            merged_details[f"maest_{key}"] = val
+        else:
+            # Other features — keep unprefixed but don't overwrite musicnn values
+            merged_details.setdefault(key, val)
+
+    return final_name, merged_details
 
 # --- Other Helpers ---
 
