@@ -61,7 +61,7 @@ from config import (STRATIFIED_GENRES, OTHER_FEATURE_LABELS, MOOD_LABELS, MAEST_
                     LN_MAEST_GENRE_DIVERSITY_STATS, LN_MAEST_GENRE_PURITY_STATS,
                     LN_HYBRID_MOOD_DIVERSITY_STATS, LN_HYBRID_MOOD_PURITY_STATS,
                     OTHER_FEATURE_PREDOMINANCE_THRESHOLD_FOR_PURITY,
-                    USE_GPU_CLUSTERING, TASK_STATUS_SUCCESS,
+                    USE_GPU_CLUSTERING, TASK_STATUS_SUCCESS,CLUSTERING_SUBSET_SONGS,
                     HYBRID_PCA_MUSICNN, HYBRID_PCA_MAEST,
                     HYBRID_WEIGHT_MUSICNN, HYBRID_WEIGHT_MAEST)
 from .commons import score_vector
@@ -1490,6 +1490,55 @@ def _select_tracks_for_genre(
         chosen.extend(reused)
         selected_ids.update(track['item_id'] for track in reused)
     return chosen
+
+
+def _get_stratified_song_subset(
+    genre_map,
+    target_per_genre,
+    prev_ids=None,
+    percent_change=0.0,
+):
+    tracks_by_id, genre_tracks = _regroup_tracks_by_primary_genre(genre_map)
+
+    desired_size = min(max(0, int(CLUSTERING_SUBSET_SONGS)), len(tracks_by_id))
+    if desired_size == 0:
+        return []
+
+    quotas = _calculate_stratified_quotas(
+        genre_tracks,
+        desired_size,
+        target_per_genre,
+    )
+
+    known_quota_total = sum(quotas.values())
+    if known_quota_total < desired_size:
+        other_capacity = len(genre_tracks.get('__other__', []))
+        quotas['__other__'] = min(
+            other_capacity,
+            desired_size - known_quota_total,
+        )
+
+    previous_ids = set(prev_ids or [])
+    change_fraction = min(1.0, max(0.0, float(percent_change)))
+    rotate = prev_ids is not None
+    selected, selected_ids = [], set()
+
+    for genre, quota in quotas.items():
+        if quota <= 0:
+            continue
+        selected.extend(
+            _select_tracks_for_genre(
+                genre_tracks.get(genre, []),
+                quota,
+                previous_ids,
+                change_fraction,
+                selected_ids,
+                rotate,
+            )
+        )
+
+    random.shuffle(selected)
+    return selected
 
 def _get_track_primary_genre(track_data):
     """Helper to determine the primary stratified genre for a track."""
